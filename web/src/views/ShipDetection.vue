@@ -173,14 +173,14 @@ onMounted(async () => {
 
 .detection-box {
   position: absolute;
-  border: 2px solid #4a148c;
-  background: rgba(74, 20, 140, 0.2);
+  border: 2px solid #90caf9;
+  background: rgba(144, 202, 249, 0.2);
   cursor: pointer;
   transition: background-color 0.2s;
 }
 
 .detection-box:hover {
-  background: rgba(74, 20, 140, 0.4);
+  background: rgba(144, 202, 249, 0.4);
 }
 
 .control-panel {
@@ -188,6 +188,7 @@ onMounted(async () => {
   background: white;
   border-left: 1px solid #eee;
   overflow-y: auto;
+  color: #333;
 }
 
 .detection-controls {
@@ -211,10 +212,15 @@ onMounted(async () => {
   border: 1px solid #eee;
   margin-bottom: 10px;
   cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.detection-item:hover {
+  background: rgba(0, 33, 113, 0.05);
 }
 
 .detection-item.selected {
-  border-color: #4a148c;
-  background: rgba(74, 20, 140, 0.1);
+  border-color: #002171;
+  background: rgba(0, 33, 113, 0.1);
 }
 </style>

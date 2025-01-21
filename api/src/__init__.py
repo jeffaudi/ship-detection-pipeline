@@ -15,7 +15,10 @@ def create_app():
         app,
         resources={
             r"/api/*": {
-                "origins": ["http://localhost:5173"],  # Frontend dev server
+                "origins": [
+                    "http://localhost:5173",  # Vite dev server
+                    "http://localhost:8080",  # Vue CLI dev server
+                ],
                 "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
                 "allow_headers": ["Content-Type", "Authorization"],
                 "supports_credentials": True,

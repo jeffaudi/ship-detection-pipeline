@@ -42,11 +42,14 @@
 
         <button
           @click="searchImages"
-          :disabled="loading"
+          :disabled="loading || !isBoundingBoxValid"
           class="btn-primary"
         >
-          Search Images
+          {{ loading ? 'Searching...' : 'Search Images' }}
         </button>
+        <p v-if="!isBoundingBoxValid" class="error-message">
+          Please select an area on the map first
+        </p>
       </div>
 
       <!-- Results List -->
@@ -62,9 +65,12 @@
             <!-- Thumbnail would go here -->
           </div>
           <div class="image-info">
-            <h3>{{ image.title }}</h3>
+            <h3>
+              <span>{{ image.title.slice(0, 26) }}</span><br>
+              <span>{{ image.title.slice(26, 53) + '...' }}</span>
+            </h3>
             <p>Date: {{ new Date(image.timestamp).toLocaleDateString() }}</p>
-            <p>Cloud Cover: {{ image.cloud_cover }}%</p>
+            <p>Cloud Cover: {{ Math.round(image.cloud_cover) }}%</p>
           </div>
         </div>
       </div>
@@ -72,11 +78,38 @@
 
     <div class="preview-panel">
       <div v-if="selectedImage" class="image-preview">
-        <!-- Full image preview -->
+        <!-- Map preview -->
+        <div class="map-container">
+          <l-map
+            ref="map"
+            :zoom="8"
+            :center="footprintCenter"
+            :use-global-leaflet="false"
+          >
+            <l-tile-layer
+              url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+              layer-type="base"
+              name="OpenStreetMap"
+            />
+            <l-polygon
+              v-if="footprintCoords"
+              :lat-lngs="footprintCoords"
+              color="#4a148c"
+              :weight="2"
+            />
+          </l-map>
+        </div>
+        <!-- Actions -->
         <div class="preview-actions">
           <button
-            @click="startDetection"
+            @click="ingestImage"
             class="btn-primary"
+          >
+            Ingest Image
+          </button>
+          <button
+            @click="startDetection"
+            class="btn-secondary"
           >
             Start Detection
           </button>
@@ -87,6 +120,10 @@
             Manual Annotation
           </button>
         </div>
+        <!-- Quicklook preview -->
+        <div v-if="quicklookUrl" class="quicklook-container">
+          <img :src="quicklookUrl" alt="Quicklook preview" class="quicklook-image" />
+        </div>
       </div>
       <div v-else class="no-selection">
         Select an image to preview
@@ -96,8 +133,10 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { LMap, LTileLayer, LPolygon } from '@vue-leaflet/vue-leaflet'
+import "leaflet/dist/leaflet.css"
 import config from '../config'
 
 const route = useRoute()
@@ -120,6 +159,12 @@ const north = ref(route.query.north)
 const south = ref(route.query.south)
 const east = ref(route.query.east)
 const west = ref(route.query.west)
+
+const isBoundingBoxValid = computed(() => {
+  return north.value && south.value && east.value && west.value &&
+         !isNaN(parseFloat(north.value)) && !isNaN(parseFloat(south.value)) &&
+         !isNaN(parseFloat(east.value)) && !isNaN(parseFloat(west.value))
+})
 
 const searchImages = async () => {
   loading.value = true
@@ -157,8 +202,17 @@ const searchImages = async () => {
   }
 }
 
-const selectImage = (image) => {
+const quicklookUrl = ref(null)
+
+const selectImage = async (image) => {
   selectedImage.value = image
+  // Use our proxy endpoint for the quicklook
+  quicklookUrl.value = `${config.apiUrl}/sentinel/${image.identifier}/quicklook`
+}
+
+const ingestImage = () => {
+  if (!selectedImage.value) return
+  router.push(`/ingest/${selectedImage.value.id}`)
 }
 
 const startDetection = () => {
@@ -191,6 +245,34 @@ const getImageMetadata = async (imageId) => {
   }
 }
 
+const footprintCoords = computed(() => {
+  if (!selectedImage.value?.footprint) return null
+
+  // Parse the WKT polygon string
+  const coordsStr = selectedImage.value.footprint
+    .replace('POLYGON ((', '')
+    .replace('))', '')
+
+  // Convert to array of [lat, lng] coordinates
+  return coordsStr.split(',').map(pair => {
+    const [lng, lat] = pair.trim().split(' ').map(Number)
+    return [lat, lng]  // Leaflet uses [lat, lng] order
+  })
+})
+
+const footprintCenter = computed(() => {
+  if (!footprintCoords.value) return [0, 0]
+
+  // Calculate the center of the footprint
+  const lats = footprintCoords.value.map(coord => coord[0])
+  const lngs = footprintCoords.value.map(coord => coord[1])
+
+  return [
+    (Math.min(...lats) + Math.max(...lats)) / 2,
+    (Math.min(...lngs) + Math.max(...lngs)) / 2
+  ]
+})
+
 onMounted(() => {
   // Initial search if bounds are provided
   if (route.query.north) {
@@ -203,14 +285,17 @@ onMounted(() => {
 .image-search {
   display: grid;
   grid-template-columns: 400px 1fr;
-  height: 100vh;
+  height: calc(100vh - 68px);  /* Subtract header height */
+  overflow: hidden;  /* Prevent double scrollbars */
 }
 
 .search-panel {
-  padding: 20px;
+  padding: 0 20px 0 10px;
   background: white;
   border-right: 1px solid #eee;
   overflow-y: auto;
+  color: #333;
+  height: 100%;  /* Use 100% instead of 100vh */
 }
 
 .search-filters {
@@ -218,10 +303,23 @@ onMounted(() => {
 }
 
 .bounds-display {
-  margin-top: 20px;
+  margin-top: 0 20px 0 10px;
   padding: 10px;
   border: 1px solid #ddd;
   background: #f9f9f9;
+}
+
+.date-inputs input {
+  background: white;
+  border: 1px solid #ddd;
+  color: #333;
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+
+.date-inputs input:focus {
+  outline: none;
+  border-color: #002171;
 }
 
 .results-list {
@@ -230,20 +328,28 @@ onMounted(() => {
 
 .image-item {
   padding: 10px;
-  border: 1px solid #eee;
+  border: 1px solid rgba(255, 255, 255, 0.1);
   margin-bottom: 10px;
   cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.image-item:hover {
+  background: rgba(255, 255, 255, 0.05);
 }
 
 .image-item.selected {
-  border-color: #4a148c;
-  background: rgba(74, 20, 140, 0.1);
+  border-color: #90caf9;
+  background: rgba(144, 202, 249, 0.1);
 }
 
 .preview-panel {
-  padding: 20px;
+  padding: 10px 20px 10px 10px;
   display: flex;
   flex-direction: column;
+  background: white;
+  overflow-y: auto;
+  height: 100%;  /* Use 100% instead of 100vh */
 }
 
 .preview-actions {
@@ -256,5 +362,43 @@ onMounted(() => {
   text-align: center;
   color: #666;
   margin-top: 40px;
+}
+
+.map-container {
+  height: 350px;  /* Slightly reduce map height */
+  width: 100%;
+  margin-bottom: 20px;
+  border: 1px solid #eee;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+:deep(.leaflet-container) {
+  height: 100%;
+  width: 100%;
+}
+
+.quicklook-container {
+  margin: 20px 0;
+  border: 1px solid #eee;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.quicklook-image {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+.error-message {
+  color: #dc3545;
+  font-size: 0.9em;
+  margin-top: 8px;
+}
+
+.btn-primary:disabled {
+  background-color: #ccc;
+  cursor: not-allowed;
 }
 </style>

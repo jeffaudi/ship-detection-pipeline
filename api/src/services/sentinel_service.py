@@ -47,8 +47,10 @@ class SentinelService:
             token_data = response.json()
             self.access_token = token_data.get("access_token")
             expires_in = token_data.get("expires_in", 3600)  # Default to 1 hour if not provided
-            print(f"Access token expires in: {expires_in} seconds")
-            self.token_expiry = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
+            # print(f"Access token expires in: {expires_in} seconds")
+            self.token_expiry = (
+                datetime.now(timezone.utc) + timedelta(seconds=expires_in) - timedelta(seconds=10)
+            )
             return self.access_token
 
         except Exception as e:
@@ -56,8 +58,8 @@ class SentinelService:
             raise
 
     def search_images(
-        self, bbox: list, date_from: str, date_to: str, cloud_cover: int = 20
-    ) -> Dict[str, Any]:
+        self, bbox: list, date_from: str, date_to: str, cloud_cover: int = 20, verbose: bool = True
+    ) -> Dict[str, Any] | list[Dict[str, Any]]:
         """Search Sentinel images and cache results in Supabase."""
         # bbox: [[south, west], [north, east]]
         try:
@@ -70,7 +72,8 @@ class SentinelService:
             if isinstance(date_to, datetime):
                 date_to = date_to.isoformat() + "Z"
 
-            print(f"Searching with dates: {date_from} to {date_to}")
+            if verbose:
+                print(f"Searching with dates: {date_from} to {date_to}")
 
             # Construct filters
             filter_collection = "Collection/Name eq 'SENTINEL-2'"
@@ -96,14 +99,16 @@ class SentinelService:
                 f"{filter_dates} and {filter_cloud_cover} and {filter_aoi}"
             )
 
-            print(f"Using filter: {combined_filter}")
+            if verbose:
+                print(f"Using filter: {combined_filter}")
 
             # Encode the combined filter for URL inclusion
             encoded_filter = urllib.parse.quote(combined_filter)
 
             # Construct the full query URL
-            query_url = f"https://catalogue.dataspace.copernicus.eu/odata/v1/Products?$filter={encoded_filter}"  # noqa: E501
-            print(f"Query URL: {query_url}")
+            query_url = f"https://catalogue.dataspace.copernicus.eu/odata/v1/Products?$filter={encoded_filter}&$expand=Attributes&$top=100"  # noqa: E501
+            if verbose:
+                print(f"Query URL: {query_url}")
 
             # Set up headers with the access token
             headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}
@@ -111,11 +116,18 @@ class SentinelService:
             # Execute the query
             response = requests.get(query_url, headers=headers)
             if not response.ok:
-                print(f"Error response: {response.text}")
+                if verbose:
+                    print(f"Error response: {response.text}")
                 return {"error": f"API request failed: {response.text}"}
 
             response_data = response.json()
             products = response_data.get("value", [])
+            if verbose:
+                print(f"Received {len(products)} products")
+            if products:
+                if verbose:
+                    print("First product attributes:")
+                    print(products[0].get("Attributes", {}))
 
             # Format results
             results = []
@@ -126,6 +138,14 @@ class SentinelService:
                     "title": product["Name"],
                     "timestamp": product["ContentDate"]["Start"],
                     "footprint": product["Footprint"].split(";")[1][0:-1],
+                    "cloud_cover": next(
+                        (
+                            attr["Value"]
+                            for attr in product.get("Attributes", [])
+                            if attr.get("Name") == "cloudCover"
+                        ),
+                        None,
+                    ),
                     "metadata": product,
                 }
                 results.append(image_data)
@@ -141,14 +161,16 @@ class SentinelService:
                     # Insert all new records
                     self.supabase.table("sentinel_images").insert(results).execute()
                 except Exception as e:
-                    print(f"Error caching results in Supabase: {str(e)}")
+                    if verbose:
+                        print(f"Error caching results in Supabase: {str(e)}")
                     # Continue even if caching fails
 
-            return {"results": results, "status": "success"}
+            return results
 
         except Exception as e:
-            print(f"Error searching Sentinel images: {str(e)}")
-            return {"error": str(e), "status": "error"}
+            if verbose:
+                print(f"Error searching Sentinel images: {str(e)}")
+            return {"error": str(e)}
 
     def get_metadata(self, image_id: str) -> Dict[str, Any]:
         """Get image metadata from cache or CDSE API."""
@@ -176,10 +198,18 @@ class SentinelService:
 
             # Format and cache it
             image_data = {
-                "id": product["Id"],
+                "identifier": product["Id"],
                 "title": product["Name"],
                 "timestamp": product["ContentDate"]["Start"],
-                "footprint": product["Footprint"],
+                "footprint": product["Footprint"].split(";")[1][0:-1],
+                "cloud_cover": next(
+                    (
+                        attr["Value"]
+                        for attr in product.get("Attributes", [])
+                        if attr.get("Name") == "cloudCover"
+                    ),
+                    None,
+                ),
                 "metadata": product,
             }
 

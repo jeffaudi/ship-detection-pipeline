@@ -157,6 +157,7 @@ onMounted(() => {
   padding: 20px;
   background: white;
   border-left: 1px solid #eee;
+  color: #333;
 }
 
 .selection-info {

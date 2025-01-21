@@ -1,7 +1,7 @@
 """Routes module for the API."""
 
 import requests
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, Response, jsonify, request
 
 from .services.annotation_service import AnnotationService
 from .services.detection_service import DetectionService
@@ -69,7 +69,6 @@ def search_images():
         if not bbox or len(bbox) != 2 or len(bbox[0]) != 2 or len(bbox[1]) != 2:
             return jsonify({"error": "Invalid bbox format"}), 400
 
-        print(f"Searching with bbox: {bbox}")
         results = sentinel_service.search_images(
             bbox=bbox,
             date_from=data.get("date_from"),
@@ -77,11 +76,10 @@ def search_images():
             cloud_cover=data.get("cloud_cover", 20),
         )
 
-        print(f"Search results: {results}")
-
         if isinstance(results, dict) and "error" in results:
             return jsonify(results), 400
 
+        print(f"Received {len(results)} results.")
         return jsonify(results)
 
     except Exception as e:
@@ -96,6 +94,62 @@ def get_image_metadata(image_id):
         metadata = sentinel_service.get_metadata(image_id)
         return jsonify(metadata)
     except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+
+@api_bp.route("/sentinel/<image_id>/quicklook", methods=["GET"])
+def get_image_quicklook(image_id):
+    """Get quicklook preview for a specific Sentinel image."""
+    try:
+        # Get access token
+        token = sentinel_service._get_access_token()
+        if not token:
+            return jsonify({"error": "Failed to get access token"}), 401
+
+        headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+
+        # First, get the product with its Assets
+        query_url = f"https://catalogue.dataspace.copernicus.eu/odata/v1/Products?$filter=Id eq '{image_id}'&$expand=Assets"  # noqa: E501
+        print(f"Requesting product with assets from: {query_url}")
+
+        response = requests.get(query_url, headers=headers)
+        response.raise_for_status()
+
+        data = response.json()
+        print(f"Product response: {data}")
+
+        if not data.get("value"):
+            return jsonify({"error": "Product not found"}), 404
+
+        product = data["value"][0]
+        assets = product.get("Assets", [])
+
+        # Find the quicklook asset
+        quicklook_asset = next(
+            (asset for asset in assets if asset.get("Type") == "QUICKLOOK"), None
+        )
+
+        if not quicklook_asset:
+            return jsonify({"error": "Quicklook not found for this image"}), 404
+
+        # Use the DownloadLink from the asset
+        quicklook_url = quicklook_asset["DownloadLink"]
+        headers["Accept"] = "image/jpeg"
+
+        print(f"Requesting quicklook from: {quicklook_url}")
+        response = requests.get(quicklook_url, headers=headers, stream=True)
+        response.raise_for_status()
+
+        # Forward the image response
+        return Response(
+            response.iter_content(chunk_size=8192),
+            content_type=response.headers.get("Content-Type", "image/jpeg"),
+            status=response.status_code,
+        )
+    except requests.exceptions.RequestException as e:
+        print(f"Error fetching quicklook: {str(e)}")
+        if hasattr(e.response, "text"):
+            print(f"Response content: {e.response.text}")
         return jsonify({"error": str(e)}), 400
 
 
