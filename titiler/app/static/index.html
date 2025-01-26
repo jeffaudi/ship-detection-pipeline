@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <title>Sentinel-2 COG Viewer</title>
+    <meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no" />
+    <script src="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.js"></script>
+    <link href="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.css" rel="stylesheet" />
+    <style>
+        body { margin: 0; padding: 0; }
+        #map { position: absolute; top: 0; bottom: 0; width: 100%; }
+        #controls {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            padding: 10px;
+            background: white;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+            border-radius: 4px;
+            z-index: 1;
+        }
+        #status {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            padding: 10px;
+            background: white;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+            border-radius: 4px;
+            z-index: 1;
+            display: none;
+        }
+        .error { color: red; }
+        .success { color: green; }
+        label { display: block; margin-bottom: 5px; }
+        input, select { margin-bottom: 10px; width: 200px; }
+        button {
+            background: #4CAF50;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:hover { background: #45a049; }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    <div id="controls">
+        <label for="bucket">Bucket:</label>
+        <input type="text" id="bucket" value="dl4eo-sentinel2-cogs" />
+
+        <label for="cogPath">COG Path:</label>
+        <input type="text" id="cogPath" value="cogs/5ba786ba-eda0-4174-8879-63406fb84804_rgb.tif" />
+
+        <label for="renderMode">Render Mode:</label>
+        <select id="renderMode">
+            <option value="tiles">Tiles</option>
+            <option value="preview">Preview</option>
+        </select>
+
+        <button onclick="loadCOG()">Load COG</button>
+    </div>
+    <div id="status"></div>
+
+    <script>
+        const map = new maplibregl.Map({
+            container: 'map',
+            style: {
+                version: 8,
+                sources: {
+                    'osm': {
+                        type: 'raster',
+                        tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
+                        tileSize: 256,
+                        attribution: '© OpenStreetMap contributors'
+                    }
+                },
+                layers: [{
+                    id: 'osm',
+                    type: 'raster',
+                    source: 'osm',
+                    minzoom: 0,
+                    maxzoom: 19
+                }]
+            },
+            center: [44.5, -12.2],
+            zoom: 9
+        });
+
+        function showStatus(message, isError = false) {
+            const status = document.getElementById('status');
+            status.innerHTML = message;
+            status.className = isError ? 'error' : 'success';
+            status.style.display = 'block';
+            setTimeout(() => { status.style.display = 'none'; }, 5000);
+        }
+
+        async function testTileUrl(url) {
+            try {
+                const response = await fetch(url);
+                if (!response.ok) {
+                    const text = await response.text();
+                    console.error('Error response:', text);
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                return true;
+            } catch (error) {
+                console.error('Error testing tile URL:', error);
+                return false;
+            }
+        }
+
+        async function loadCOG() {
+            const bucket = document.getElementById('bucket').value;
+            const cogPath = document.getElementById('cogPath').value;
+            const renderMode = document.getElementById('renderMode').value;
+
+            // Remove existing COG layer if any
+            if (map.getSource('cog')) {
+                map.removeLayer('cog');
+                map.removeSource('cog');
+            }
+
+            try {
+                // Construct TiTiler URL
+                const baseUrl = window.location.origin;
+                const fullPath = `${bucket}/${cogPath}`;
+                const tileUrl = `${baseUrl}/cog/tiles/${fullPath}/{z}/{x}/{y}`;
+                console.log('Testing URL:', tileUrl);
+
+                // First check if the COG info is available
+                const infoUrl = `${baseUrl}/cog/info/${fullPath}`;
+                console.log('Checking info URL:', infoUrl);
+
+                try {
+                    const infoResponse = await fetch(infoUrl);
+                    if (!infoResponse.ok) {
+                        const text = await infoResponse.text();
+                        console.error('Info response:', text);
+                        throw new Error(`Failed to get COG info: ${infoResponse.status}`);
+                    }
+                    const info = await infoResponse.json();
+                    console.log('COG info:', info);
+
+                    // Test a tile URL
+                    const testUrl = tileUrl.replace('{z}', '9').replace('{x}', '319').replace('{y}', '273');
+                    console.log('Testing tile URL:', testUrl);
+                    const isValid = await testTileUrl(testUrl);
+
+                    if (!isValid) {
+                        throw new Error('Failed to load tiles. Please check your bucket and path.');
+                    }
+
+                    // Add new COG layer
+                    map.addSource('cog', {
+                        type: 'raster',
+                        tiles: [tileUrl],
+                        tileSize: 256,
+                        maxzoom: 24
+                    });
+
+                    map.addLayer({
+                        id: 'cog',
+                        type: 'raster',
+                        source: 'cog',
+                        paint: {
+                            'raster-opacity': 1.0
+                        }
+                    });
+
+                    // Update map view to match COG bounds if available
+                    if (info.geographic_bounds) {
+                        const [west, south, east, north] = info.geographic_bounds;
+                        map.fitBounds([
+                            [west, south], // Southwest coordinates [lon, lat]
+                            [east, north]  // Northeast coordinates [lon, lat]
+                        ], {
+                            padding: 20
+                        });
+                    }
+
+                    showStatus('COG loaded successfully!');
+                } catch (error) {
+                    console.error('Error loading COG:', error);
+                    showStatus(error.message, true);
+                }
+            } catch (error) {
+                console.error('Error loading COG:', error);
+                showStatus(error.message, true);
+            }
+        }
+
+        // Load initial COG when map loads
+        map.on('load', loadCOG);
+    </script>
+</body>
+</html>

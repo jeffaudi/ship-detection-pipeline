@@ -58,6 +58,10 @@ test:
 test-watch:
 	PYTHONPATH=. $(PYTEST) tests/ -v --cov=src -f
 
+# Check API
+test-api:
+	curl -X POST -H "Content-Type: application/json" -d '{"bbox": [[43.0, 2.0], [44.0, 3.0]], "date_from": "2024-01-01", "date_to": "2024-01-26", "cloud_cover": 20}' http://localhost:5454/api/sentinel/search
+
 # Clean up Python cache files
 clean:
 	find . -type d -name "__pycache__" -exec rm -r {} +

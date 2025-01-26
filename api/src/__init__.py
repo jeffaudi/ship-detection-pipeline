@@ -1,12 +1,14 @@
 """Initialization module for the API package."""
 
+from typing import Tuple, Union
+
 from flask import Flask, request
 from flask_cors import CORS
 
 from .routes import api_bp
 
 
-def create_app():
+def create_app() -> Flask:
     """Create and configure the Flask application."""
     app = Flask(__name__)
 
@@ -32,9 +34,10 @@ def create_app():
 
     # Add OPTIONS handler
     @app.before_request
-    def handle_options():
+    def handle_options() -> Union[None, Tuple[str, int]]:
         """Handle OPTIONS requests."""
         if request.method == "OPTIONS":
             return "", 200
+        return None
 
     return app

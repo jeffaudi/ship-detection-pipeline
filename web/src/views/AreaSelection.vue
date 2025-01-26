@@ -15,12 +15,7 @@
         />
 
         <!-- Selection Rectangle -->
-        <l-rectangle
-          v-if="selection"
-          :bounds="selection"
-          :color="'#4a148c'"
-          :weight="2"
-        />
+        <l-rectangle v-if="selection" :bounds="selection" :color="'#4a148c'" :weight="2" />
       </l-map>
     </div>
 
@@ -36,18 +31,8 @@
         </div>
 
         <div class="actions">
-          <button
-            @click="searchImages"
-            class="btn-primary"
-          >
-            Search Sentinel Images
-          </button>
-          <button
-            @click="clearSelection"
-            class="btn-secondary"
-          >
-            Clear Selection
-          </button>
+          <button @click="searchImages" class="btn-primary">Search Sentinel Images</button>
+          <button @click="clearSelection" class="btn-secondary">Clear Selection</button>
         </div>
       </div>
 
@@ -59,88 +44,122 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
-import "leaflet/dist/leaflet.css"
-import L from 'leaflet'
-import { LMap, LTileLayer, LRectangle } from '@vue-leaflet/vue-leaflet'
+import { ref, onMounted, onBeforeUnmount, watch } from 'vue';
+import { useRouter } from 'vue-router';
+import 'leaflet/dist/leaflet.css';
+import L from 'leaflet';
+import { LMap, LTileLayer, LRectangle } from '@vue-leaflet/vue-leaflet';
 
-const router = useRouter()
-const map = ref(null)
-const zoom = ref(4)
-const center = ref([-12.8275, 45.1662]) // Starting position in Mayotte
-const selection = ref(null)
-let drawingRect = null
-let startPoint = null
+const router = useRouter();
+const map = ref(null);
+const zoom = ref(4);
+const center = ref([-12.8275, 45.1662]); // Starting position in Mayotte
+const selection = ref(null);
+let drawingRect = null;
+let startPoint = null;
 
 const onBoundsChanged = (bounds) => {
-  console.log('Map bounds:', bounds)
-}
+  console.log('Map bounds:', bounds);
+};
 
 const onMapClick = (e) => {
   if (!startPoint) {
-    startPoint = e.latlng
-    drawingRect = L.rectangle([startPoint, startPoint], { color: '#4a148c', weight: 2 })
-    drawingRect.addTo(map.value.leafletObject)
+    startPoint = e.latlng;
+    drawingRect = L.rectangle([startPoint, startPoint], { color: '#4a148c', weight: 2 });
+    drawingRect.addTo(map.value.leafletObject);
   } else {
     const bounds = [
       [Math.min(startPoint.lat, e.latlng.lat), Math.min(startPoint.lng, e.latlng.lng)],
-      [Math.max(startPoint.lat, e.latlng.lat), Math.max(startPoint.lng, e.latlng.lng)]
-    ]
-    selection.value = bounds
+      [Math.max(startPoint.lat, e.latlng.lat), Math.max(startPoint.lng, e.latlng.lng)],
+    ];
+    selection.value = bounds;
     if (drawingRect) {
-      drawingRect.remove()
-      drawingRect = null
+      drawingRect.remove();
+      drawingRect = null;
     }
-    startPoint = null
+    startPoint = null;
   }
-}
+};
 
 const onMapMouseMove = (e) => {
   if (startPoint && drawingRect) {
     const bounds = [
       [Math.min(startPoint.lat, e.latlng.lat), Math.min(startPoint.lng, e.latlng.lng)],
-      [Math.max(startPoint.lat, e.latlng.lat), Math.max(startPoint.lng, e.latlng.lng)]
-    ]
-    drawingRect.setBounds(bounds)
+      [Math.max(startPoint.lat, e.latlng.lat), Math.max(startPoint.lng, e.latlng.lng)],
+    ];
+    drawingRect.setBounds(bounds);
   }
-}
+};
 
 const searchImages = () => {
-  if (!selection.value) return
+  if (!selection.value) return;
 
   // Convert selection to query params
   const params = new URLSearchParams({
     north: selection.value[1][0],
     south: selection.value[0][0],
     east: selection.value[1][1],
-    west: selection.value[0][1]
-  })
+    west: selection.value[0][1],
+  });
 
   // Navigate to image search with bounds
-  router.push(`/images?${params.toString()}`)
-}
+  router.push(`/images?${params.toString()}`);
+};
 
 const clearSelection = () => {
-  selection.value = null
-}
+  selection.value = null;
+  if (drawingRect) {
+    drawingRect.remove();
+    drawingRect = null;
+  }
+  startPoint = null;
+};
+
+const setupMapHandlers = () => {
+  if (map.value && map.value.leafletObject) {
+    const leafletMap = map.value.leafletObject;
+    // Remove existing handlers first
+    leafletMap.off('click', onMapClick);
+    leafletMap.off('mousemove', onMapMouseMove);
+    // Add new handlers
+    leafletMap.on('click', onMapClick);
+    leafletMap.on('mousemove', onMapMouseMove);
+  }
+};
+
+// Watch for map ref changes
+watch(
+  () => map.value?.leafletObject,
+  (newMap) => {
+    if (newMap) {
+      setupMapHandlers();
+    }
+  }
+);
 
 onMounted(() => {
-  setTimeout(() => {
-    if (map.value && map.value.leafletObject) {
-      const leafletMap = map.value.leafletObject
-      leafletMap.on('click', onMapClick)
-      leafletMap.on('mousemove', onMapMouseMove)
-    }
-  }, 100) // Small delay to ensure map is mounted
-})
+  // Initial setup
+  setupMapHandlers();
+});
+
+onBeforeUnmount(() => {
+  // Clean up
+  if (map.value?.leafletObject) {
+    const leafletMap = map.value.leafletObject;
+    leafletMap.off('click', onMapClick);
+    leafletMap.off('mousemove', onMapMouseMove);
+  }
+  if (drawingRect) {
+    drawingRect.remove();
+  }
+});
 </script>
 
 <style scoped>
 .area-selection {
   display: grid;
   grid-template-columns: 1fr 300px;
-  height: calc(100vh - 60px);  /* Adjust for the header */
+  height: calc(100vh - 60px); /* Adjust for the header */
 }
 
 .map-container {

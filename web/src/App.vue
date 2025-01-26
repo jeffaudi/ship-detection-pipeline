@@ -1,25 +1,9 @@
 <template>
   <div class="app">
     <nav class="navigation">
-      <router-link
-        to="/"
-        class="nav-link"
-        active-class="active"
-      >
-        Area Selection
-      </router-link>
-      <router-link
-        to="/images"
-        class="nav-link"
-        active-class="active"
-      >
-        Image Search
-      </router-link>
-      <router-link
-        to="/detection/latest"
-        class="nav-link"
-        active-class="active"
-      >
+      <router-link to="/" class="nav-link" active-class="active"> Area Selection </router-link>
+      <router-link to="/images" class="nav-link" active-class="active"> Image Search </router-link>
+      <router-link to="/detection/latest" class="nav-link" active-class="active">
         Ship Detection
       </router-link>
     </nav>
@@ -32,8 +16,8 @@
 
 <script>
 export default {
-  name: 'App'
-}
+  name: 'App',
+};
 </script>
 
 <style>
@@ -42,7 +26,18 @@ export default {
 
 /* Apply font globally */
 :root {
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+  font-family:
+    'Inter',
+    -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    Roboto,
+    Oxygen,
+    Ubuntu,
+    Cantarell,
+    'Open Sans',
+    'Helvetica Neue',
+    sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }

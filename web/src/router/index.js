@@ -1,7 +1,7 @@
-import { createRouter, createWebHistory } from 'vue-router'
-import AreaSelection from '../views/AreaSelection.vue'
-import ImageSearch from '../views/ImageSearch.vue'
-import ShipDetection from '../views/ShipDetection.vue'
+import { createRouter, createWebHistory } from 'vue-router';
+import AreaSelection from '../views/AreaSelection.vue';
+import ImageSearch from '../views/ImageSearch.vue';
+import ShipDetection from '../views/ShipDetection.vue';
 
 const router = createRouter({
   history: createWebHistory(),
@@ -9,19 +9,19 @@ const router = createRouter({
     {
       path: '/',
       name: 'area-selection',
-      component: AreaSelection
+      component: AreaSelection,
     },
     {
       path: '/images',
       name: 'image-search',
-      component: ImageSearch
+      component: ImageSearch,
     },
     {
       path: '/detection/:id',
       name: 'ship-detection',
-      component: ShipDetection
-    }
-  ]
-})
+      component: ShipDetection,
+    },
+  ],
+});
 
-export default router
+export default router;

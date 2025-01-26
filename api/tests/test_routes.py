@@ -105,7 +105,7 @@ def test_health_check(client, mocker):
     # Mock Supabase
     mock_execute = mocker.MagicMock()
     mocker.patch.object(
-        SentinelService.supabase.table("sentinel_images"),
+        SentinelService.supabase.table("sentinel2_images"),
         "select",
         return_value=mocker.MagicMock(limit=mocker.MagicMock(execute=mock_execute)),
     )
@@ -134,7 +134,7 @@ def test_health_check_service_failure(client, mocker):
     # Mock Supabase failure
     mock_execute = mocker.MagicMock(side_effect=Exception("Supabase error"))
     mocker.patch.object(
-        SentinelService.supabase.table("sentinel_images"),
+        SentinelService.supabase.table("sentinel2_images"),
         "select",
         return_value=mocker.MagicMock(limit=mocker.MagicMock(execute=mock_execute)),
     )

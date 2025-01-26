@@ -1,12 +1,13 @@
 """Service for interacting with Sentinel data."""
 
-import os
 import urllib.parse
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict
+from typing import Any, Dict, Optional, Union
 
 import requests
 from supabase import Client, create_client
+
+from ..config import Config
 
 
 class SentinelService:
@@ -14,14 +15,14 @@ class SentinelService:
 
     def __init__(self) -> None:
         """Initialize the SentinelService with Supabase client and CDSE credentials."""
-        url: str = os.environ.get("SUPABASE_URL", "")
-        key: str = os.environ.get("SUPABASE_KEY", "")
-        self.supabase: Client = create_client(url, key)
+        # Initialize Supabase client
+        self.supabase: Client = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
 
         # CDSE credentials
-        self.cdse_username = os.environ.get("CDSE_USERNAME")
-        self.cdse_password = os.environ.get("CDSE_PASSWORD")
-        self.access_token = None
+        self.cdse_username = Config.CDSE_USERNAME
+        self.cdse_password = Config.CDSE_PASSWORD
+        self.access_token: Optional[str] = None
+        self.token_expiry: Optional[datetime] = None
 
     def _get_access_token(self) -> str | None:
         """Get CDSE access token."""
@@ -47,19 +48,37 @@ class SentinelService:
             token_data = response.json()
             self.access_token = token_data.get("access_token")
             expires_in = token_data.get("expires_in", 3600)  # Default to 1 hour if not provided
-            # print(f"Access token expires in: {expires_in} seconds")
             self.token_expiry = (
                 datetime.now(timezone.utc) + timedelta(seconds=expires_in) - timedelta(seconds=10)
-            )
+            )  # noqa: E501
             return self.access_token
 
         except Exception as e:
             print(f"Error getting access token: {str(e)}")
             raise
 
+    def _bbox_to_wkt(self, bbox: Dict[str, float]) -> str:
+        """Convert bbox to WKT format.
+
+        Copernicus format expects coordinates as (latitude longitude)
+        """
+        # Create WKT polygon with coordinates as (longitude latitude)
+        return (
+            f"POLYGON(({bbox['south']} {bbox['west']}, "
+            f"{bbox['south']} {bbox['east']}, "
+            f"{bbox['north']} {bbox['east']}, "
+            f"{bbox['north']} {bbox['west']}, "
+            f"{bbox['south']} {bbox['west']}))"
+        )
+
     def search_images(
-        self, bbox: list, date_from: str, date_to: str, cloud_cover: int = 20, verbose: bool = True
-    ) -> Dict[str, Any] | list[Dict[str, Any]]:
+        self,
+        bbox: list,
+        date_from: Union[str, datetime],
+        date_to: Union[str, datetime],
+        cloud_cover: int = 20,
+        verbose: bool = True,
+    ) -> Union[Dict[str, Any], list[Dict[str, Any]]]:
         """Search Sentinel images and cache results in Supabase."""
         # bbox: [[south, west], [north, east]]
         try:
@@ -88,9 +107,17 @@ class SentinelService:
             )
 
             # Convert bbox to WKT format
+            # bbox format is [[lat1, lon1], [lat2, lon2]]
+            # where lat1 is south, lat2 is north, lon1 is west, lon2 is east
             aoi_wkt = self._bbox_to_wkt(
-                {"south": bbox[0][0], "west": bbox[0][1], "north": bbox[1][0], "east": bbox[1][1]}
+                {
+                    "south": bbox[0][0],  # lat1
+                    "west": bbox[0][1],  # lon1
+                    "north": bbox[1][0],  # lat2
+                    "east": bbox[1][1],  # lon2
+                }
             )
+            # WKT format expects coordinates as (lon lat)
             filter_aoi = f"OData.CSC.Intersects(area=geography'SRID=4326;{aoi_wkt}')"
 
             # Combine filters
@@ -133,37 +160,39 @@ class SentinelService:
             results = []
 
             for product in products:
+                # Extract cloud cover
+                cloud_cover = next(
+                    (
+                        attr["Value"]
+                        for attr in product.get("Attributes", [])
+                        if attr.get("Name") == "cloudCover"
+                    ),
+                    100,
+                )
+
+                # Parse footprint to PostGIS format
+                footprint_wkt = product["Footprint"].split(";")[1][0:-1]
+
+                # Format data for response
                 image_data = {
                     "identifier": product["Id"],
                     "title": product["Name"],
                     "timestamp": product["ContentDate"]["Start"],
-                    "footprint": product["Footprint"].split(";")[1][0:-1],
-                    "cloud_cover": next(
-                        (
-                            attr["Value"]
-                            for attr in product.get("Attributes", [])
-                            if attr.get("Name") == "cloudCover"
-                        ),
-                        None,
-                    ),
-                    "metadata": product,
+                    "footprint": footprint_wkt,
+                    "cloud_cover": cloud_cover,
+                    "metadata": str(product),  # Convert to string as per schema
                 }
                 results.append(image_data)
 
-            if results:
                 try:
-                    # Delete existing records for these identifiers
-                    identifiers = [r["identifier"] for r in results]
-                    self.supabase.table("sentinel_images").delete().in_(
-                        "identifier", identifiers
-                    ).execute()
-
-                    # Insert all new records
-                    self.supabase.table("sentinel_images").insert(results).execute()
+                    # Insert into Supabase, TODO:update if exists
+                    if verbose:
+                        print(f"Inserting/updating image {image_data['identifier']}")
+                    self.supabase.table("sentinel2_images").upsert(image_data).execute()
                 except Exception as e:
                     if verbose:
-                        print(f"Error caching results in Supabase: {str(e)}")
-                    # Continue even if caching fails
+                        print(f"Error inserting into database: {str(e)}")
+                    # Continue with next image even if this one fails
 
             return results
 
@@ -175,19 +204,7 @@ class SentinelService:
     def get_metadata(self, image_id: str) -> Dict[str, Any]:
         """Get image metadata from cache or CDSE API."""
         try:
-            # Try cache first
-            response = (
-                self.supabase.table("sentinel_images")
-                .select("*")
-                .eq("id", image_id)
-                .single()
-                .execute()
-            )
-
-            if response.data:
-                return response.data
-
-            # If not in cache, get from CDSE API
+            # Get from CDSE API
             access_token = self._get_access_token()
             headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}
 
@@ -196,7 +213,7 @@ class SentinelService:
             response.raise_for_status()
             product = response.json()
 
-            # Format and cache it
+            # Format metadata
             image_data = {
                 "identifier": product["Id"],
                 "title": product["Name"],
@@ -213,20 +230,8 @@ class SentinelService:
                 "metadata": product,
             }
 
-            self.supabase.table("sentinel_images").insert(image_data).execute()
-
             return image_data
 
         except Exception as e:
             print(f"Error getting image metadata: {str(e)}")
             return {"error": str(e)}
-
-    def _bbox_to_wkt(self, bbox: Dict[str, float]) -> str:
-        """Convert bbox to WKT format."""
-        return (
-            f"POLYGON(({bbox['west']} {bbox['south']}, "
-            f"{bbox['east']} {bbox['south']}, "
-            f"{bbox['east']} {bbox['north']}, "
-            f"{bbox['west']} {bbox['north']}, "
-            f"{bbox['west']} {bbox['south']}))"
-        )

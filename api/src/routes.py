@@ -1,7 +1,10 @@
 """Routes module for the API."""
 
+from typing import Any, Dict, Tuple, Union
+
 import requests
-from flask import Blueprint, Response, jsonify, request
+from flask import Blueprint, Response, request
+from flask.wrappers import Response as FlaskResponse
 
 from .services.annotation_service import AnnotationService
 from .services.detection_service import DetectionService
@@ -16,8 +19,12 @@ annotation_service = AnnotationService()
 
 
 @api_bp.route("/health", methods=["GET"])
-def health_check():
-    """Health check endpoint to verify API and service status."""
+def health_check() -> Tuple[Dict[str, Any], int]:
+    """Health check endpoint to verify API and service status.
+
+    Returns:
+        Tuple containing the response data and status code.
+    """
     try:
         # Check services
         services_status = {"sentinel_api": False, "supabase": False, "api": True}
@@ -43,68 +50,99 @@ def health_check():
 
         # Check Supabase connection
         try:
-            sentinel_service.supabase.table("sentinel_images").select("*").limit(1).execute()
+            sentinel_service.supabase.table("sentinel2_images").select("*").limit(1).execute()
             services_status["supabase"] = True
         except Exception as e:
             print(f"Supabase error: {str(e)}")
             services_status["supabase"] = False
 
-        return jsonify({"status": "healthy", "services": services_status, "version": "0.1.0"})
+        return {"status": "healthy", "services": services_status, "version": "0.1.0"}, 200
     except Exception as e:
-        return jsonify({"status": "unhealthy", "error": str(e)}), 500
+        return {"status": "unhealthy", "error": str(e)}, 500
 
 
 # Sentinel image routes
 @api_bp.route("/sentinel/search", methods=["POST"])
-def search_images():
-    """Search for Sentinel images based on provided criteria."""
+def search_images() -> Tuple[Dict[str, Any], int]:
+    """Search for Sentinel images based on provided criteria.
+
+    Returns:
+        Tuple containing the response data and status code.
+    """
     try:
+        print("Received request to /sentinel/search")
         data = request.get_json()
-        print(f"Received search request with data: {data}")
+        print(f"Request data: {data}")
 
         if not data:
-            return jsonify({"error": "No data provided"}), 400
+            print("No data provided in request")
+            return {"error": "No data provided"}, 400
 
         bbox = data.get("bbox")
         if not bbox or len(bbox) != 2 or len(bbox[0]) != 2 or len(bbox[1]) != 2:
-            return jsonify({"error": "Invalid bbox format"}), 400
+            print(f"Invalid bbox format: {bbox}")
+            return {"error": "Invalid bbox format"}, 400
 
+        print(
+            f"Searching with parameters: bbox={bbox}, date_from={data.get('date_from')}, date_to={data.get('date_to')}, cloud_cover={data.get('cloud_cover', 20)}"  # noqa: E501
+        )
         results = sentinel_service.search_images(
             bbox=bbox,
             date_from=data.get("date_from"),
             date_to=data.get("date_to"),
             cloud_cover=data.get("cloud_cover", 20),
         )
+        print(f"Raw results from sentinel_service: {results}")
 
         if isinstance(results, dict) and "error" in results:
-            return jsonify(results), 400
+            print(f"Search error: {results['error']}")
+            return results, 400
 
-        print(f"Received {len(results)} results.")
-        return jsonify(results)
+        print(f"Found {len(results)} results")
+        response = {"results": results}
+        print(f"Sending response: {response}")
+        return response, 200
 
     except Exception as e:
         print(f"Error in search_images: {str(e)}")
-        return jsonify({"error": str(e)}), 500
+        import traceback
+
+        print(f"Traceback: {traceback.format_exc()}")
+        return {"error": str(e)}, 500
 
 
 @api_bp.route("/sentinel/<image_id>", methods=["GET"])
-def get_image_metadata(image_id):
-    """Get metadata for a specific Sentinel image."""
+def get_image_metadata(image_id: str) -> Tuple[Dict[str, Any], int]:
+    """Get metadata for a specific Sentinel image.
+
+    Args:
+        image_id: The ID of the Sentinel image.
+
+    Returns:
+        Tuple containing the response data and status code.
+    """
     try:
         metadata = sentinel_service.get_metadata(image_id)
-        return jsonify(metadata)
+        return metadata, 200
     except Exception as e:
-        return jsonify({"error": str(e)}), 400
+        return {"error": str(e)}, 400
 
 
 @api_bp.route("/sentinel/<image_id>/quicklook", methods=["GET"])
-def get_image_quicklook(image_id):
-    """Get quicklook preview for a specific Sentinel image."""
+def get_image_quicklook(image_id: str) -> Union[FlaskResponse, Tuple[Dict[str, Any], int]]:
+    """Get quicklook preview for a specific Sentinel image.
+
+    Args:
+        image_id: The ID of the Sentinel image.
+
+    Returns:
+        Either a Flask Response with the image or a tuple with error details and status code.
+    """
     try:
         # Get access token
         token = sentinel_service._get_access_token()
         if not token:
-            return jsonify({"error": "Failed to get access token"}), 401
+            return {"error": "Failed to get access token"}, 401
 
         headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
 
@@ -119,7 +157,7 @@ def get_image_quicklook(image_id):
         print(f"Product response: {data}")
 
         if not data.get("value"):
-            return jsonify({"error": "Product not found"}), 404
+            return {"error": "Product not found"}, 404
 
         product = data["value"][0]
         assets = product.get("Assets", [])
@@ -130,7 +168,7 @@ def get_image_quicklook(image_id):
         )
 
         if not quicklook_asset:
-            return jsonify({"error": "Quicklook not found for this image"}), 404
+            return {"error": "Quicklook not found for this image"}, 404
 
         # Use the DownloadLink from the asset
         quicklook_url = quicklook_asset["DownloadLink"]
@@ -148,53 +186,75 @@ def get_image_quicklook(image_id):
         )
     except requests.exceptions.RequestException as e:
         print(f"Error fetching quicklook: {str(e)}")
-        if hasattr(e.response, "text"):
+        if hasattr(e, "response") and e.response is not None:
             print(f"Response content: {e.response.text}")
-        return jsonify({"error": str(e)}), 400
+        return {"error": str(e)}, 400
 
 
 # Detection routes
 @api_bp.route("/detect", methods=["POST"])
-def detect_ships():
-    """Detect ships in a given image."""
+def detect_ships() -> Tuple[Dict[str, Any], int]:
+    """Detect ships in a given image.
+
+    Returns:
+        Tuple containing the response data and status code.
+    """
     data = request.json
     try:
         results = detection_service.detect_ships(
             image_id=data["image_id"], bbox=data.get("bbox"), confidence=data.get("confidence", 0.5)
         )
-        return jsonify(results)
+        return results, 200
     except Exception as e:
-        return jsonify({"error": str(e)}), 400
+        return {"error": str(e)}, 400
 
 
 @api_bp.route("/detections/<detection_id>", methods=["GET"])
-def get_detection(detection_id):
-    """Get detection results for a specific detection ID."""
+def get_detection(detection_id: str) -> Tuple[Dict[str, Any], int]:
+    """Get detection results for a specific detection ID.
+
+    Args:
+        detection_id: The ID of the detection.
+
+    Returns:
+        Tuple containing the response data and status code.
+    """
     try:
         detection = detection_service.get_detection(detection_id)
-        return jsonify(detection)
+        return detection, 200
     except Exception as e:
-        return jsonify({"error": str(e)}), 400
+        return {"error": str(e)}, 400
 
 
 # Annotation routes
 @api_bp.route("/annotations", methods=["POST"])
-def create_annotation():
-    """Create a new annotation."""
+def create_annotation() -> Tuple[Dict[str, Any], int]:
+    """Create a new annotation.
+
+    Returns:
+        Tuple containing the response data and status code.
+    """
     data = request.json
     try:
         annotation = annotation_service.create_annotation(data)
-        return jsonify(annotation)
+        return annotation, 200
     except Exception as e:
-        return jsonify({"error": str(e)}), 400
+        return {"error": str(e)}, 400
 
 
 @api_bp.route("/annotations/<annotation_id>", methods=["PUT"])
-def update_annotation(annotation_id):
-    """Update an existing annotation."""
+def update_annotation(annotation_id: str) -> Tuple[Dict[str, Any], int]:
+    """Update an existing annotation.
+
+    Args:
+        annotation_id: The ID of the annotation to update.
+
+    Returns:
+        Tuple containing the response data and status code.
+    """
     data = request.json
     try:
         updated = annotation_service.update_annotation(annotation_id, data)
-        return jsonify(updated)
+        return updated, 200
     except Exception as e:
-        return jsonify({"error": str(e)}), 400
+        return {"error": str(e)}, 400

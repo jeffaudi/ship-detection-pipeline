@@ -6,7 +6,9 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "format": "prettier --write \"src/**/*.{js,vue,css,scss,html}\"",
+    "lint": "eslint \"src/**/*.{js,vue}\" --fix"
   },
   "keywords": [],
   "author": "",
@@ -19,5 +21,11 @@
     "vite": "^5.0.0",
     "vue": "^3.4.0",
     "vue-router": "^4.5.0"
+  },
+  "devDependencies": {
+    "@vue/eslint-config-prettier": "^9.0.0",
+    "eslint": "^8.57.1",
+    "eslint-plugin-vue": "^9.32.0",
+    "prettier": "^3.4.2"
   }
 }

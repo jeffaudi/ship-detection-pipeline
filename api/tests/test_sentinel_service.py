@@ -36,7 +36,7 @@ def test_search_images(sentinel_service, mocker):
     # Mock Supabase upsert
     mock_upsert = mocker.MagicMock()
     mocker.patch.object(
-        sentinel_service.supabase.table("sentinel_images"), "upsert", return_value=mock_upsert
+        sentinel_service.supabase.table("sentinel2_images"), "upsert", return_value=mock_upsert
     )
 
     # Test parameters
@@ -73,7 +73,7 @@ def test_get_metadata(sentinel_service, mocker):
     mock_response = mocker.MagicMock()
     mock_response.data = mock_data
     mocker.patch.object(
-        sentinel_service.supabase.table("sentinel_images"),
+        sentinel_service.supabase.table("sentinel2_images"),
         "select",
         return_value=mocker.MagicMock(
             eq=mocker.MagicMock(

@@ -1,5 +1,6 @@
-# Node
-node_modules/
+# Git
+.git
+.gitignore
 
 # Python
 __pycache__/
@@ -7,6 +8,7 @@ __pycache__/
 *$py.class
 *.so
 .Python
+env/
 build/
 develop-eggs/
 dist/
@@ -18,7 +20,6 @@ lib64/
 parts/
 sdist/
 var/
-wheels/
 *.egg-info/
 .installed.cfg
 *.egg
@@ -26,7 +27,6 @@ wheels/
 # Virtual Environment
 venv/
 ENV/
-env/
 
 # IDE
 .idea/
@@ -34,29 +34,11 @@ env/
 *.swp
 *.swo
 
-# Environment variables
-.env
-**/deep-learning-earth-d9ea763f10c9.json
-
-# Logs
-*.log
-
-# Data
-data/
-*.tif
-*.tiff
-*.jpg
-*.jpeg
-*.png
-
-# Model files
-*.pth
-*.onnx
-*.h5
-
-# Docker
-.docker/
-
-# System
+# OS
 .DS_Store
 Thumbs.db
+
+# Project specific
+credentials.json
+*.log
+tmp/

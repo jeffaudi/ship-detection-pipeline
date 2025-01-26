@@ -3,11 +3,7 @@
     <div class="image-panel">
       <!-- Main image display with detections -->
       <div class="image-container">
-        <img
-          v-if="imageUrl"
-          :src="imageUrl"
-          @load="onImageLoad"
-        />
+        <img v-if="imageUrl" :src="imageUrl" @load="onImageLoad" />
 
         <!-- Detection overlay -->
         <div
@@ -26,20 +22,10 @@
       <div class="detection-controls">
         <div class="confidence-threshold">
           <label>Confidence Threshold: {{ confidence }}%</label>
-          <input
-            type="range"
-            v-model="confidence"
-            min="0"
-            max="100"
-            step="5"
-          />
+          <input type="range" v-model="confidence" min="0" max="100" step="5" />
         </div>
 
-        <button
-          @click="runDetection"
-          :disabled="detecting"
-          class="btn-primary"
-        >
+        <button @click="runDetection" :disabled="detecting" class="btn-primary">
           {{ detecting ? 'Detecting...' : 'Run Detection' }}
         </button>
       </div>
@@ -68,49 +54,49 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
-import config from '../config'
+import { ref, onMounted } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
+import config from '../config';
 
-const route = useRoute()
-const imageUrl = ref(null)
-const detections = ref([])
-const selectedDetection = ref(null)
-const confidence = ref(50)
-const detecting = ref(false)
+const route = useRoute();
+const imageUrl = ref(null);
+const detections = ref([]);
+const selectedDetection = ref(null);
+const confidence = ref(50);
+const detecting = ref(false);
 
 const runDetection = async () => {
-  detecting.value = true
+  detecting.value = true;
   try {
     const response = await fetch(`${config.apiUrl}/detect`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Accept': 'application/json'
+        Accept: 'application/json',
       },
       mode: 'cors',
       body: JSON.stringify({
         image_id: route.params.id,
-        confidence: confidence.value / 100
-      })
-    })
+        confidence: confidence.value / 100,
+      }),
+    });
 
     if (!response.ok) {
-      throw new Error('Detection request failed')
+      throw new Error('Detection request failed');
     }
 
-    const result = await response.json()
-    detections.value = result.results
+    const result = await response.json();
+    detections.value = result.results;
   } catch (error) {
-    console.error('Error running detection:', error)
+    console.error('Error running detection:', error);
   } finally {
-    detecting.value = false
+    detecting.value = false;
   }
-}
+};
 
 const selectDetection = (detection) => {
-  selectedDetection.value = detection
-}
+  selectedDetection.value = detection;
+};
 
 const getDetectionStyle = (detection) => {
   // Convert detection coordinates to CSS position
@@ -118,34 +104,34 @@ const getDetectionStyle = (detection) => {
     left: `${detection.x * 100}%`,
     top: `${detection.y * 100}%`,
     width: `${detection.width * 100}%`,
-    height: `${detection.height * 100}%`
-  }
-}
+    height: `${detection.height * 100}%`,
+  };
+};
 
 const onImageLoad = () => {
   // Handle image load event
-}
+};
 
 onMounted(async () => {
   // Load image metadata and initial detections
   try {
     const response = await fetch(`${config.apiUrl}/sentinel/${route.params.id}`, {
       headers: {
-        'Accept': 'application/json'
+        Accept: 'application/json',
       },
-      mode: 'cors'
-    })
+      mode: 'cors',
+    });
 
     if (!response.ok) {
-      throw new Error('Failed to load image metadata')
+      throw new Error('Failed to load image metadata');
     }
 
-    const metadata = await response.json()
-    imageUrl.value = metadata.preview_url
+    const metadata = await response.json();
+    imageUrl.value = metadata.preview_url;
   } catch (error) {
-    console.error('Error loading image:', error)
+    console.error('Error loading image:', error);
   }
-})
+});
 </script>
 
 <style scoped>
