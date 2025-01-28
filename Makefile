@@ -95,4 +95,4 @@ help:
 	@echo "Note: Use 'git commit --no-verify' to bypass pre-commit hooks"
 
 
-# Note: To bypass pre-commit hooks when committing, use: git commit --no-verify
+# Note: To bypass pre-commit hooks when committing, use: git commit --no-verify -m "<commit message>"

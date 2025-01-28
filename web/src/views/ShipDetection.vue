@@ -1,212 +1,263 @@
 <template>
   <div class="ship-detection">
     <div class="image-panel">
-      <!-- Main image display with detections -->
       <div class="image-container">
-        <img v-if="imageUrl" :src="imageUrl" @load="onImageLoad" />
+        <l-map
+          ref="map"
+          :bounds="initialBounds"
+          :use-global-leaflet="false"
+          :options="mapOptions"
+          @ready="onMapReady"
+        >
+          <!-- Background OSM layer -->
+          <l-tile-layer
+            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+            layer-type="base"
+            name="OpenStreetMap"
+            :options="{ maxZoom: 20 }"
+          />
 
-        <!-- Detection overlay -->
-        <div
-          v-for="detection in detections"
-          :key="detection.id"
-          class="detection-box"
-          :style="getDetectionStyle(detection)"
-          @click="selectDetection(detection)"
-        />
-      </div>
-    </div>
-
-    <div class="control-panel">
-      <h2>Ship Detection</h2>
-
-      <div class="detection-controls">
-        <div class="confidence-threshold">
-          <label>Confidence Threshold: {{ confidence }}%</label>
-          <input type="range" v-model="confidence" min="0" max="100" step="5" />
-        </div>
-
-        <button @click="runDetection" :disabled="detecting" class="btn-primary">
-          {{ detecting ? 'Detecting...' : 'Run Detection' }}
-        </button>
-      </div>
-
-      <!-- Results list -->
-      <div class="detection-results">
-        <h3>Detected Ships: {{ detections.length }}</h3>
-
-        <div class="results-list">
-          <div
-            v-for="detection in detections"
-            :key="detection.id"
-            class="detection-item"
-            :class="{ selected: selectedDetection?.id === detection.id }"
-            @click="selectDetection(detection)"
-          >
-            <div class="detection-info">
-              <p>Confidence: {{ (detection.confidence * 100).toFixed(1) }}%</p>
-              <p>Size: {{ detection.width.toFixed(1) }}m × {{ detection.length.toFixed(1) }}m</p>
-            </div>
-          </div>
-        </div>
+          <!-- COG layer -->
+          <l-tile-layer
+            v-if="imageUrl"
+            :url="imageUrl"
+            :options="{
+              maxZoom: 20,
+              minZoom: 1,
+              maxNativeZoom: 14,
+              tileSize: 256,
+              opacity: 1,
+              crossOrigin: true,
+              updateWhenIdle: true,
+              updateWhenZooming: false,
+              keepBuffer: 2,
+              maxRequests: 4,
+              loading: true,
+              attribution: 'Sentinel-2 imagery'
+            }"
+            @tileload="onTileLoad"
+            @tileerror="onTileError"
+            @loading="onTileLayerLoading"
+            @load="onTileLayerLoad"
+          />
+        </l-map>
       </div>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue';
-import { useRoute, useRouter } from 'vue-router';
+import { ref, onMounted, onUnmounted, watch } from 'vue';
+import { useRoute } from 'vue-router';
+import { LMap, LTileLayer } from '@vue-leaflet/vue-leaflet';
+import 'leaflet/dist/leaflet.css';
 import config from '../config';
 
 const route = useRoute();
 const imageUrl = ref(null);
-const detections = ref([]);
-const selectedDetection = ref(null);
-const confidence = ref(50);
-const detecting = ref(false);
+const cogStatus = ref('not_available');
+const statusPollInterval = ref(null);
 
-const runDetection = async () => {
-  detecting.value = true;
+// Function to construct the titiler URL for the COG
+const constructTitilerUrl = () => {
+  const { bucket, path } = route.query;
+  if (!bucket || !path) {
+    console.error('Missing required bucket or path parameters:', route.query);
+    return null;
+  }
+
+  // Use titiler to create a web mercator tile layer URL
+  const url = `${config.titilerUrl}/cog/tiles/${bucket}/${path}/{z}/{x}/{y}`;
+  console.log('Constructed titiler URL:', url);
+  return url;
+};
+
+// Add map ref and initial bounds
+const map = ref(null);
+// Set initial bounds to show most of the world
+const initialBounds = ref([[-60, -180], [60, 180]]);
+const mapOptions = {
+  preferCanvas: true,
+  maxZoom: 20,
+  minZoom: 1,
+  center: [0, 0],
+  zoom: 2
+};
+
+// Function to check COG status
+const checkCogStatus = async () => {
   try {
-    const response = await fetch(`${config.apiUrl}/detect`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-      },
-      mode: 'cors',
-      body: JSON.stringify({
-        image_id: route.params.id,
-        confidence: confidence.value / 100,
-      }),
-    });
-
+    const identifier = route.params.id;
+    console.log('Checking COG status for:', identifier);
+    const response = await fetch(`${config.titilerUrl}/cog/status/${identifier}`);
     if (!response.ok) {
-      throw new Error('Detection request failed');
+      throw new Error(`Failed to get COG status: ${response.statusText}`);
+    }
+    const data = await response.json();
+    console.log('COG status response:', data);
+    cogStatus.value = data.status;
+
+    // If status is ready, stop polling and update URL
+    if (data.status === 'ready') {
+      console.log('COG is ready, stopping poll');
+      if (statusPollInterval.value) {
+        clearInterval(statusPollInterval.value);
+        statusPollInterval.value = null;
+      }
     }
 
-    const result = await response.json();
-    detections.value = result.results;
+    return data;
   } catch (error) {
-    console.error('Error running detection:', error);
-  } finally {
-    detecting.value = false;
+    console.error('Error checking COG status:', error);
+    return { status: 'error' };
   }
 };
 
-const selectDetection = (detection) => {
-  selectedDetection.value = detection;
+// Function to start polling
+const startStatusPolling = () => {
+  console.log('Starting status polling');
+  // Clear any existing interval
+  if (statusPollInterval.value) {
+    clearInterval(statusPollInterval.value);
+  }
+
+  // Do an initial check
+  checkCogStatus();
+
+  // Start polling every 5 seconds
+  statusPollInterval.value = setInterval(checkCogStatus, 5000);
 };
 
-const getDetectionStyle = (detection) => {
-  // Convert detection coordinates to CSS position
-  return {
-    left: `${detection.x * 100}%`,
-    top: `${detection.y * 100}%`,
-    width: `${detection.width * 100}%`,
-    height: `${detection.height * 100}%`,
-  };
+// Function to get image bounds and update map
+const getImageBounds = async () => {
+  const { bucket, path } = route.query;
+  if (!bucket || !path) return;
+
+  try {
+    const response = await fetch(`${config.titilerUrl}/cog/info/${bucket}/${path}`);
+    if (!response.ok) {
+      throw new Error(`Failed to get image info: ${response.statusText}`);
+    }
+    const info = await response.json();
+    console.log('Image info:', info);
+    if (info.geographic_bounds) {
+      // Convert geographic_bounds from [minx, miny, maxx, maxy] to [[lat, lng], [lat, lng]]
+      const bounds = [
+        [info.geographic_bounds[1], info.geographic_bounds[0]],  // [lat, lng] for southwest corner
+        [info.geographic_bounds[3], info.geographic_bounds[2]]   // [lat, lng] for northeast corner
+      ];
+      console.log('Setting bounds to:', bounds);
+
+      // Update the bounds ref
+      initialBounds.value = bounds;
+
+      // Immediately fit bounds if map is available
+      if (map.value?.leafletObject) {
+        console.log('Fitting map to bounds');
+        map.value.leafletObject.fitBounds(bounds, {
+          padding: [50, 50],
+          maxZoom: 14
+        });
+      }
+    }
+  } catch (error) {
+    console.error('Error getting image bounds:', error);
+  }
 };
 
-const onImageLoad = () => {
-  // Handle image load event
+const onMapReady = (e) => {
+  // Store map reference when ready
+  map.value = e.sourceTarget;
+  console.log('Map is ready');
+
+  // If we already have bounds, fit to them
+  if (initialBounds.value[0][0] !== -60) {
+    console.log('Fitting to existing bounds');
+    map.value.fitBounds(initialBounds.value, {
+      padding: [50, 50],
+      maxZoom: 14
+    });
+  }
 };
+
+const onTileLoad = (e) => {
+  console.log('Tile loaded:', e);
+};
+
+const onTileError = (e) => {
+  console.error('Tile error:', e);
+};
+
+const onTileLayerLoading = (e) => {
+  console.log('Tile layer loading:', e);
+};
+
+const onTileLayerLoad = (e) => {
+  console.log('Tile layer loaded:', e);
+};
+
+// Watch for route changes to restart polling
+watch(
+  () => route.params.id,
+  (newId) => {
+    if (newId) {
+      console.log('Route ID changed, restarting polling');
+      startStatusPolling();
+    }
+  }
+);
 
 onMounted(async () => {
-  // Load image metadata and initial detections
-  try {
-    const response = await fetch(`${config.apiUrl}/sentinel/${route.params.id}`, {
-      headers: {
-        Accept: 'application/json',
-      },
-      mode: 'cors',
-    });
+  // Start status polling
+  startStatusPolling();
 
-    if (!response.ok) {
-      throw new Error('Failed to load image metadata');
-    }
-
-    const metadata = await response.json();
-    imageUrl.value = metadata.preview_url;
-  } catch (error) {
-    console.error('Error loading image:', error);
+  // Set up the titiler URL for the COG first
+  imageUrl.value = constructTitilerUrl();
+  if (!imageUrl.value) {
+    console.error('Failed to construct titiler URL');
+    return;
   }
+
+  // Then get image bounds
+  await getImageBounds();
+});
+
+onUnmounted(() => {
+  // Clean up polling interval
+  if (statusPollInterval.value) {
+    clearInterval(statusPollInterval.value);
+    statusPollInterval.value = null;
+  }
+});
+
+// Expose cogStatus for the parent component
+defineExpose({
+  cogStatus
 });
 </script>
 
 <style scoped>
 .ship-detection {
-  display: grid;
-  grid-template-columns: 1fr 300px;
-  height: 100vh;
+  height: calc(100vh - 60px); /* Adjust for header height */
+  overflow: hidden;
 }
 
 .image-panel {
   position: relative;
   overflow: hidden;
+  background: #f5f5f5;
+  height: 100%;
 }
 
 .image-container {
   position: relative;
   height: 100%;
-}
-
-.image-container img {
   width: 100%;
+}
+
+:deep(.leaflet-container) {
   height: 100%;
-  object-fit: contain;
-}
-
-.detection-box {
-  position: absolute;
-  border: 2px solid #90caf9;
-  background: rgba(144, 202, 249, 0.2);
-  cursor: pointer;
-  transition: background-color 0.2s;
-}
-
-.detection-box:hover {
-  background: rgba(144, 202, 249, 0.4);
-}
-
-.control-panel {
-  padding: 20px;
-  background: white;
-  border-left: 1px solid #eee;
-  overflow-y: auto;
-  color: #333;
-}
-
-.detection-controls {
-  margin: 20px 0;
-}
-
-.confidence-threshold {
-  margin-bottom: 20px;
-}
-
-.detection-results {
-  margin-top: 20px;
-}
-
-.results-list {
-  margin-top: 10px;
-}
-
-.detection-item {
-  padding: 10px;
-  border: 1px solid #eee;
-  margin-bottom: 10px;
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.detection-item:hover {
-  background: rgba(0, 33, 113, 0.05);
-}
-
-.detection-item.selected {
-  border-color: #002171;
-  background: rgba(0, 33, 113, 0.1);
+  width: 100%;
+  background: #f5f5f5;
 }
 </style>

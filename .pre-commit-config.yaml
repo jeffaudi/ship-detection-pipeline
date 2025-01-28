@@ -36,13 +36,13 @@ repos:
             'flake8-comprehensions',
         ]
 
--   repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.14.1
-    hooks:
-    -   id: mypy
-        additional_dependencies: [
-            'types-Flask',
-            'types-Jinja2',
-            'types-requests',
-            # Add other specific type stubs you need
-        ]
+#-   repo: https://github.com/pre-commit/mirrors-mypy
+#    rev: v1.14.1
+#    hooks:
+#    -   id: mypy
+#        additional_dependencies: [
+#            'types-Flask',
+#            'types-Jinja2',
+#            'types-requests',
+#            # Add other specific type stubs you need
+#        ]

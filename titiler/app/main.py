@@ -11,25 +11,52 @@ from typing import Any, Dict, List, Union
 
 import numpy as np
 import pyproj
+from cachetools import TTLCache, cached
+from dotenv import load_dotenv
 from fastapi import APIRouter, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from rio_tiler.io import COGReader
 from rio_tiler.utils import render
+from supabase import Client, create_client
 
 from titiler.core.errors import DEFAULT_STATUS_CODES, add_exception_handlers
 from titiler.mosaic.errors import MOSAIC_STATUS_CODES
 
+# Load environment variables
+load_dotenv()
+
 # Configure logging
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Initialize Supabase client
+try:
+    supabase_url = os.getenv("SUPABASE_URL")
+    supabase_key = os.getenv("SUPABASE_KEY")
+    if not supabase_url or not supabase_key:
+        raise ValueError("SUPABASE_URL and SUPABASE_KEY must be set")
+    supabase: Client = create_client(supabase_url, supabase_key)
+    logger.info("Successfully initialized Supabase client")
+except Exception as e:
+    logger.error(f"Failed to initialize Supabase client: {str(e)}")
+    raise
 
 # Initialize FastAPI
 app = FastAPI(
     title="TiTiler for COGs",
-    description="A simple TiTiler application to serve COG files",
+    description="A simple TiTiler application to serve COG files from local and Google Cloud Storage",  # noqa: E501
 )
+
+# Configure GDAL for GCS authentication
+os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "/app/credentials.json"
+os.environ["GDAL_HTTP_COOKIEFILE"] = "/vsimem/cookies.txt"
+os.environ["GDAL_HTTP_COOKIEJAR"] = "/vsimem/cookies.txt"
+os.environ["CPL_VSIL_CURL_ALLOWED_EXTENSIONS"] = ".tif"
+os.environ["GDAL_DISABLE_READDIR_ON_OPEN"] = "EMPTY_DIR"
+os.environ["VSI_CACHE"] = "TRUE"
+os.environ["VSI_CACHE_SIZE"] = "1000000"
 
 # Add CORS middleware
 app.add_middleware(
@@ -44,6 +71,88 @@ app.add_middleware(
 static_dir = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir), html=True), name="static")
 
+# Create router with custom prefix
+router = APIRouter()
+
+# Initialize a cache for COG readers with a 5-minute TTL
+cog_cache = TTLCache(maxsize=100, ttl=300)
+
+
+@cached(cog_cache)
+def get_cog_reader(file_path: str) -> COGReader:
+    """Get a cached COG reader for the given file path."""
+    return COGReader(file_path)
+
+
+async def get_cog_status(identifier: str) -> Dict[str, Any]:
+    """Get the status of a COG from Supabase.
+
+    Args:
+        identifier: The Sentinel-2 image identifier.
+
+    Returns:
+        Dict containing the status and location information if available.
+    """
+    try:
+        logger.info(f"Checking COG status for identifier: {identifier}")
+        response = (
+            supabase.table("sentinel2_cogs").select("*").eq("identifier", identifier).execute()
+        )
+
+        logger.info(f"Supabase response: {response.data}")
+
+        if not response.data:
+            logger.info(f"No COG found for identifier: {identifier}")
+            return {"status": "not_available"}
+
+        cog_info = response.data[0]
+        status = cog_info.get("status")
+        logger.info(f"Found COG with status: {status}")
+
+        if status == "ready":
+            result = {
+                "status": "ready",
+                "bucket": cog_info.get("bucket"),
+                "path": cog_info.get("path"),
+                "uri": f"gs://{cog_info['bucket']}/{cog_info['path']}",
+            }
+            logger.info(f"Returning COG info: {result}")
+            return result
+        elif status == "processing":
+            return {"status": "processing"}
+        else:
+            return {"status": "not_available"}
+
+    except Exception as e:
+        logger.error(f"Error checking COG status: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to check COG status: {str(e)}")
+
+
+@router.get("/status/{identifier}")
+async def check_cog_status(identifier: str) -> Dict[str, Any]:
+    """Check the status of a COG.
+
+    Args:
+        identifier: The Sentinel-2 image identifier.
+
+    Returns:
+        Dict containing the status and location information if available.
+    """
+    return await get_cog_status(identifier)
+
+
+def parse_path(path: str) -> str:
+    """Parse the input path and return the appropriate URI for COGReader.
+
+    Handles both local files and Google Cloud Storage URLs.
+    """
+    if path.startswith("local/"):
+        # Assume local file
+        file_path = Path(__file__).parent / path
+        return str(file_path)
+    else:
+        return f"gs://{path}"
+
 
 # Debug middleware to log requests
 @app.middleware("http")
@@ -57,17 +166,23 @@ async def log_requests(request: Request, call_next: Any) -> Response:
     Returns:
         The response from the next handler.
     """
-    logger.debug(f"Request path: {request.url.path}")
+    import time
+
+    start_time = time.time()
+
+    logger.info(f"Request path: {request.url.path}")
     logger.debug(f"Request method: {request.method}")
     logger.debug(f"Request query params: {request.query_params}")
     logger.debug(f"Request path params: {request.path_params}")
+
     response = await call_next(request)
-    logger.debug(f"Response status: {response.status_code}")
+
+    process_time = (time.time() - start_time) * 1000
+    logger.info(
+        f"Request completed in {process_time:.2f}ms - {request.method} {request.url.path} - {response.status_code}"  # noqa: E501
+    )
+
     return response
-
-
-# Create router with custom prefix
-router = APIRouter()
 
 
 @router.get("/info/{path:path}")
@@ -75,7 +190,7 @@ async def info(path: str) -> Dict[str, Any]:
     """Get COG info.
 
     Args:
-        path: Path to the COG file.
+        path: Path to the COG file (local path or GCS URL).
 
     Returns:
         Dict containing the COG metadata and geographic bounds.
@@ -85,31 +200,27 @@ async def info(path: str) -> Dict[str, Any]:
     """
     logger.debug(f"Getting info for path: {path}")
     try:
-        # Construct absolute path from the app directory
-        file_path = Path(__file__).parent / path
-        logger.info(f"Looking for file at: {file_path}")
+        file_path = parse_path(path)
+        logger.info(f"In /info using file path: {file_path}")
 
-        if not file_path.exists():
-            raise FileNotFoundError(f"File not found: {file_path}")
+        reader = get_cog_reader(file_path)
+        # Get the basic info
+        info_dict = dict(reader.info())
 
-        with COGReader(str(file_path)) as cog:
-            # Get the basic info
-            info_dict = dict(cog.info())
+        # Get the source CRS and bounds
+        src_crs = reader.crs
+        bounds = reader.bounds
 
-            # Get the source CRS and bounds
-            src_crs = cog.crs
-            bounds = cog.bounds
+        # Transform bounds to WGS84 (EPSG:4326)
+        transformer = pyproj.Transformer.from_crs(src_crs, "EPSG:4326", always_xy=True)
+        west, south = transformer.transform(bounds[0], bounds[1])
+        east, north = transformer.transform(bounds[2], bounds[3])
 
-            # Transform bounds to WGS84 (EPSG:4326)
-            transformer = pyproj.Transformer.from_crs(src_crs, "EPSG:4326", always_xy=True)
-            west, south = transformer.transform(bounds[0], bounds[1])
-            east, north = transformer.transform(bounds[2], bounds[3])
+        # Add geographic bounds to the dictionary
+        info_dict["geographic_bounds"] = [west, south, east, north]
+        logger.debug(f"Geographic bounds: {info_dict['geographic_bounds']}")
 
-            # Add geographic bounds to the dictionary
-            info_dict["geographic_bounds"] = [west, south, east, north]
-            logger.debug(f"Geographic bounds: {info_dict['geographic_bounds']}")
-
-            return info_dict
+        return info_dict
 
     except Exception as e:
         logger.error(f"Error getting info: {str(e)}")
@@ -121,7 +232,7 @@ async def preview(path: str) -> Dict[str, Union[List[List[float]], List[float]]]
     """Get COG preview.
 
     Args:
-        path: Path to the COG file.
+        path: Path to the COG file (local path or GCS URL).
 
     Returns:
         Dict containing preview data and bounds.
@@ -131,14 +242,10 @@ async def preview(path: str) -> Dict[str, Union[List[List[float]], List[float]]]
     """
     logger.debug(f"Getting preview for path: {path}")
     try:
-        # Construct absolute path from the app directory
-        file_path = Path(__file__).parent / path
-        logger.info(f"Looking for file at: {file_path}")
+        file_path = parse_path(path)
+        logger.info(f"In /preview using file path: {file_path}")
 
-        if not file_path.exists():
-            raise FileNotFoundError(f"File not found: {file_path}")
-
-        with COGReader(str(file_path)) as cog:
+        with COGReader(file_path) as cog:
             data = cog.preview()
             return {
                 "data": data.data.tolist(),
@@ -154,7 +261,7 @@ async def tiles(path: str, z: int, x: int, y: int) -> Response:
     """Get map tile.
 
     Args:
-        path: Path to the COG file.
+        path: Path to the COG file (local path or GCS URL).
         z: Zoom level.
         x: Tile X coordinate.
         y: Tile Y coordinate.
@@ -167,47 +274,58 @@ async def tiles(path: str, z: int, x: int, y: int) -> Response:
     """
     logger.debug(f"Getting tile {z}/{x}/{y} for path: {path}")
     try:
-        # Construct absolute path from the app directory
-        file_path = Path(__file__).parent / path
-        logger.info(f"Looking for file at: {file_path}")
+        file_path = parse_path(path)
+        logger.info(f"In /tiles/{z}/{x}/{y} using file path: {file_path}")
 
-        if not file_path.exists():
-            raise FileNotFoundError(f"File not found: {file_path}")
+        # Use cached reader
+        reader = get_cog_reader(file_path)
 
-        with COGReader(str(file_path)) as cog:
-            # Get bounds and CRS
-            bounds = cog.bounds
-            src_crs = cog.crs
-            logger.debug(f"COG bounds: {bounds}")
-            logger.debug(f"COG CRS: {src_crs}")
+        # Get dataset info including overviews
+        info = reader.info()
+        overviews = info.overviews
+        logger.debug(f"Available overviews: {overviews}")
 
-            try:
-                # Get the tile using rio-tiler (it handles the reprojection internally)
-                tile = cog.tile(x, y, z)
+        try:
+            # Configure tile reading options
+            tile_options = {
+                "resampling_method": "bilinear",  # Use bilinear resampling for better visual quality # noqa: E501
+                "force_binary_mask": True,  # Ensure consistent masking
+                "max_size": None,  # Let rio-tiler choose based on overview
+            }
 
-                # Get the mask from the tile data
-                mask = tile.mask
-                if mask is None:
-                    # If no mask provided, create one based on non-zero values
-                    mask = np.any(tile.data > 0, axis=0)
+            # Get the tile using rio-tiler (it handles the reprojection internally)
+            tile = reader.tile(x, y, z, **tile_options)
+            logger.debug(f"Generated tile at zoom {z} with shape {tile.data.shape}")
 
-                # Convert tile data to PNG with mask
-                content = render(tile.data, img_format="PNG", colormap=None, mask=mask)
+            # Get the mask from the tile data
+            mask = tile.mask
+            if mask is None:
+                # If no mask provided, create one based on non-zero values
+                mask = np.any(tile.data > 0, axis=0)
 
-                return Response(content=content, media_type="image/png")
+            # Convert tile data to PNG with mask
+            content = render(tile.data, img_format="PNG", colormap=None, mask=mask)
 
-            except Exception as tile_error:
-                logger.debug(
-                    f"Error getting tile data: {str(tile_error)}. Returning transparent tile."
-                )
-                # Create a transparent tile (256x256 RGBA)
-                empty_tile = np.zeros((4, 256, 256), dtype=np.uint8)
-                content = render(empty_tile, img_format="PNG")
-                return Response(content=content, media_type="image/png")
+            return Response(
+                content=content,
+                media_type="image/png",
+                headers={
+                    "Content-Type": "image/png",
+                    "Cache-Control": "public, max-age=3600",  # Cache tiles for 1 hour
+                },
+            )
 
-    except FileNotFoundError as e:
-        logger.error(str(e))
-        raise HTTPException(status_code=404, detail=str(e))
+        except Exception as tile_error:
+            logger.debug(f"Error getting tile data: {str(tile_error)}. Returning transparent tile.")
+            # Create a transparent tile (256x256 RGBA)
+            empty_tile = np.zeros((4, 256, 256), dtype=np.uint8)
+            content = render(empty_tile, img_format="PNG")
+            return Response(
+                content=content,
+                media_type="image/png",
+                headers={"Content-Type": "image/png", "Cache-Control": "public, max-age=3600"},
+            )
+
     except Exception as e:
         logger.error(f"Error getting tile: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))

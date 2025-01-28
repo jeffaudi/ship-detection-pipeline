@@ -52,9 +52,9 @@
           </div>
           <div class="image-info">
             <h3>
-              <span>{{ image.title.slice(0, 26) }}</span
+              <span>{{ image.title.slice(0, 27) }}</span
               ><br />
-              <span>{{ image.title.slice(26, 53) + '...' }}</span>
+              <span>{{ image.title.slice(27, 60) }}</span>
             </h3>
             <p>Date: {{ new Date(image.timestamp).toLocaleDateString() }}</p>
             <p>Cloud Cover: {{ Math.round(image.cloud_cover) }}%</p>
@@ -83,11 +83,27 @@
         </div>
         <!-- Actions -->
         <div class="preview-actions">
-          <button @click="ingestImage" class="btn-primary" :disabled="ingesting">
-            {{ ingesting ? 'Ingesting...' : 'Ingest Image' }}
+          <button
+            @click="handleImageAction"
+            class="btn-primary"
+            :disabled="cogStatus === 'processing' || ingesting"
+          >
+            {{ actionButtonText }}
           </button>
-          <button @click="startDetection" class="btn-secondary">Start Detection</button>
-          <button @click="startAnnotation" class="btn-secondary">Manual Annotation</button>
+          <button
+            @click="startDetection"
+            class="btn-secondary"
+            :disabled="cogStatus !== 'ready'"
+          >
+            Start Detection
+          </button>
+          <button
+            @click="startAnnotation"
+            class="btn-secondary"
+            :disabled="cogStatus !== 'ready'"
+          >
+            Manual Annotation
+          </button>
         </div>
         <!-- Quicklook preview -->
         <div v-if="quicklookUrl" class="quicklook-container">
@@ -105,7 +121,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, computed } from 'vue';
+import { ref, onMounted, computed, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { LMap, LTileLayer, LPolygon } from '@vue-leaflet/vue-leaflet';
 import 'leaflet/dist/leaflet.css';
@@ -182,10 +198,90 @@ const searchImages = async () => {
 
 const quicklookUrl = ref(null);
 
+// Add new refs for COG status
+const cogStatus = ref(null);
+const cogInfo = ref(null);
+const statusPollInterval = ref(null); // Add ref for the polling interval
+
+// Computed property for action button text
+const actionButtonText = computed(() => {
+  if (ingesting.value) return 'Ingesting...';
+  switch (cogStatus.value) {
+    case 'ready':
+      return 'Visualize Image';
+    case 'processing':
+      return 'Processing Image';
+    default:
+      return 'Ingest Image';
+  }
+});
+
+// Function to check COG status
+const checkCogStatus = async (identifier) => {
+  try {
+    console.log('Checking COG status for:', identifier);
+    const response = await fetch(`${config.titilerUrl}/cog/status/${identifier}`);
+    const data = await response.json();
+    console.log('COG status response:', data);
+    cogStatus.value = data.status;
+    if (data.status === 'ready') {
+      cogInfo.value = {
+        bucket: data.bucket,
+        path: data.path,
+        uri: data.uri
+      };
+      // Stop polling when status is ready
+      if (statusPollInterval.value) {
+        clearInterval(statusPollInterval.value);
+        statusPollInterval.value = null;
+      }
+    }
+  } catch (error) {
+    console.error('Error checking COG status:', error);
+    cogStatus.value = 'not_available';
+  }
+};
+
+// Watch for selected image changes
+watch(selectedImage, async (newImage) => {
+  // Clear any existing polling interval
+  if (statusPollInterval.value) {
+    clearInterval(statusPollInterval.value);
+    statusPollInterval.value = null;
+  }
+
+  if (newImage) {
+    await checkCogStatus(newImage.identifier);
+  } else {
+    cogStatus.value = null;
+    cogInfo.value = null;
+  }
+});
+
+// Polling for status updates when processing
+const startStatusPolling = async (identifier) => {
+  // Clear any existing polling interval
+  if (statusPollInterval.value) {
+    clearInterval(statusPollInterval.value);
+  }
+
+  // Start new polling interval
+  statusPollInterval.value = setInterval(async () => {
+    await checkCogStatus(identifier);
+    if (cogStatus.value !== 'processing') {
+      clearInterval(statusPollInterval.value);
+      statusPollInterval.value = null;
+    }
+  }, 5000); // Poll every 5 seconds
+
+  // Initial check
+  await checkCogStatus(identifier);
+};
+
 const selectImage = async (image) => {
   selectedImage.value = image;
-  // Use our proxy endpoint for the quicklook
   quicklookUrl.value = `${config.apiUrl}/sentinel/${image.identifier}/quicklook`;
+  await checkCogStatus(image.identifier);
 };
 
 // Add these refs at the top with other refs
@@ -199,51 +295,31 @@ const ingestImage = async () => {
     ingesting.value = true;
     ingestStatus.value = { type: 'info', message: 'Ingesting image...' };
 
-    console.log('Sending request to cogger service:', {
-      url: `${config.coggerUrl}/convert`,
-      sentinel_id: selectedImage.value.identifier,
-    });
-
     const response = await fetch(`${config.coggerUrl}/convert`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Accept: 'application/json',
-        Origin: window.location.origin,
       },
-      mode: 'cors',
-      credentials: 'omit',
       body: JSON.stringify({
         sentinel_id: selectedImage.value.identifier,
       }),
     });
 
-    // Log the raw response for debugging
-    const responseText = await response.text();
-    console.log('Raw response:', responseText);
-
-    let data;
-    try {
-      data = JSON.parse(responseText);
-    } catch (parseError) {
-      throw new Error(`Invalid JSON response: ${responseText}`);
-    }
-
+    const data = await response.json();
     if (!response.ok) {
-      throw new Error(data.detail || `Server error: ${response.status} ${response.statusText}`);
+      throw new Error(data.detail || 'Failed to start ingestion');
     }
 
-    console.log('Image ingested successfully:', data);
-    ingestStatus.value = { type: 'success', message: 'Image ingested successfully!' };
+    cogStatus.value = 'processing';
+    ingestStatus.value = { type: 'success', message: 'Image ingestion started!' };
+    startStatusPolling(selectedImage.value.identifier);
+
   } catch (error) {
     console.error('Error ingesting image:', error);
     ingestStatus.value = { type: 'error', message: `Failed to ingest image: ${error.message}` };
   } finally {
     ingesting.value = false;
-    // Clear status message after 5 seconds
-    setTimeout(() => {
-      ingestStatus.value = null;
-    }, 5000);
   }
 };
 
@@ -299,6 +375,31 @@ const footprintCenter = computed(() => {
 
   return [(Math.min(...lats) + Math.max(...lats)) / 2, (Math.min(...lngs) + Math.max(...lngs)) / 2];
 });
+
+// Add visualizeImage function
+const visualizeImage = async () => {
+  if (!cogInfo.value) return;
+
+  // Navigate to ShipDetection view with the COG info
+  router.push({
+    name: 'ship-detection',
+    params: { id: selectedImage.value.identifier },
+    query: {
+      uri: cogInfo.value.uri,
+      bucket: cogInfo.value.bucket,
+      path: cogInfo.value.path
+    }
+  });
+};
+
+// Add handleImageAction function
+const handleImageAction = async () => {
+  if (cogStatus.value === 'ready') {
+    await visualizeImage();
+  } else if (cogStatus.value === 'not_available' || cogStatus.value === null) {
+    await ingestImage();
+  }
+};
 
 onMounted(() => {
   // Initial search if bounds are provided

@@ -14,11 +14,13 @@ build:
 run: build
 	set -a && . ./.env && set +a && docker run -p 8181:8080 \
 		-e PORT=8181 \
-		-e GCP_PROJECT="${GCP_PROJECT}" \
-		-e GCS_BUCKET_NAME="${GCS_BUCKET_NAME}" \
+		-e GCP_PROJECT="$(GCP_PROJECT)" \
+		-e GCS_BUCKET_NAME="$(GCS_BUCKET_NAME)" \
 		-e CDSE_USERNAME="$$CDSE_USERNAME" \
 		-e CDSE_PASSWORD="$$CDSE_PASSWORD" \
-		-v "${PWD}/${SA_KEY_FILE}:/app/credentials.json:ro" \
+		-e SUPABASE_URL="$$SUPABASE_URL" \
+		-e SUPABASE_KEY="$$SUPABASE_KEY" \
+		-v "$(PWD)/$(SA_KEY_FILE):/app/credentials.json:ro" \
 		-e GOOGLE_APPLICATION_CREDENTIALS=/app/credentials.json \
 		$(SERVICE_NAME)
 
@@ -26,11 +28,13 @@ shell: build
 	@echo "Starting interactive shell in container..."
 	set -a && . ./.env && set +a && docker run -it --rm \
 		-e PORT=8181 \
-		-e GCP_PROJECT="${GCP_PROJECT}" \
-		-e GCS_BUCKET_NAME="${GCS_BUCKET_NAME}" \
+		-e GCP_PROJECT="$(GCP_PROJECT)" \
+		-e GCS_BUCKET_NAME="$(GCS_BUCKET_NAME)" \
 		-e CDSE_USERNAME="$$CDSE_USERNAME" \
 		-e CDSE_PASSWORD="$$CDSE_PASSWORD" \
-		-v "${PWD}/${SA_KEY_FILE}:/app/credentials.json:ro" \
+		-e SUPABASE_URL="$$SUPABASE_URL" \
+		-e SUPABASE_KEY="$$SUPABASE_KEY" \
+		-v "$(PWD)/$(SA_KEY_FILE):/app/credentials.json:ro" \
 		-e GOOGLE_APPLICATION_CREDENTIALS=/app/credentials.json \
 		-v "${PWD}/app:/app/dev:ro" \
 		$(SERVICE_NAME) /bin/bash

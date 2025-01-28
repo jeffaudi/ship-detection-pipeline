@@ -16,12 +16,17 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import rasterio
 import requests
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from google.cloud import storage
 from pydantic import BaseModel
 from rasterio.errors import NotGeoreferencedWarning
 from rio_cogeo.cogeo import cog_translate
+from supabase import Client, create_client
+
+# Load environment variables
+load_dotenv()
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -29,6 +34,18 @@ logger = logging.getLogger(__name__)
 
 # Suppress rasterio warnings about georeferencing
 warnings.filterwarnings("ignore", category=NotGeoreferencedWarning)
+
+# Initialize Supabase client
+try:
+    supabase_url = os.getenv("SUPABASE_URL")
+    supabase_key = os.getenv("SUPABASE_KEY")
+    if not supabase_url or not supabase_key:
+        raise ValueError("SUPABASE_URL and SUPABASE_KEY must be set")
+    supabase: Client = create_client(supabase_url, supabase_key)
+    logger.info("Successfully initialized Supabase client")
+except Exception as e:
+    logger.error(f"Failed to initialize Supabase client: {str(e)}")
+    raise
 
 app = FastAPI(title="Sentinel COG Converter")
 
@@ -270,9 +287,9 @@ def extract_and_stack_rgb_bands(
                     data = np.clip(data, 0, 4095)
 
                     # Perform histogram stretch
-                    p2, p98 = np.percentile(data, (0.5, 99.5))
+                    p2, p98 = np.percentile(data, (0.1, 99.9))
                     data = np.clip(data, p2, p98)
-                    data = ((data - p2) / (p98 - p2) * 255).astype(np.uint8)
+                    data = ((data - p2) / (p98 - p2) * 254 + 1).astype(np.uint8)
                     band_data.append(data)
 
             if len(band_data) != 3:
@@ -383,22 +400,58 @@ def extract_and_stack_rgb_bands(
 
 @app.get("/")
 async def root():
+    """Root endpoint for the Sentinel COG Converter Service.
+
+    Returns:
+        A dictionary with a welcome message.
+    """
     return {"message": "Sentinel COG Converter Service"}
+
+
+async def update_cog_status(
+    identifier: str, status: str, bucket: Optional[str] = None, path: Optional[str] = None
+) -> None:
+    """Update the status of a COG in Supabase.
+
+    Args:
+        identifier: The Sentinel-2 image identifier.
+        status: The status to set ('processing' or 'ready').
+        bucket: Optional bucket name where the COG is stored.
+        path: Optional path to the COG in the bucket.
+    """
+    try:
+        data = {"identifier": identifier, "status": status}
+        if bucket:
+            data["bucket"] = bucket
+        if path:
+            data["path"] = path
+
+        response = supabase.table("sentinel2_cogs").upsert(data, on_conflict="identifier").execute()
+        if not response.data:
+            logger.error(f"Failed to update COG status for {identifier}")
+        else:
+            logger.info(f"Updated COG status for {identifier} to {status}")
+    except Exception as e:
+        logger.error(f"Error updating COG status: {str(e)}")
+        raise
 
 
 @app.post("/convert")
 async def convert_to_cog(image: SentinelImage) -> Dict[str, str]:
-    """Convert a Sentinel-2 image to COG format.
+    """Convert Sentinel-2 image to COG and upload to GCS.
 
     Args:
-        image: SentinelImage model containing the image ID and bucket name.
+        image: SentinelImage model containing sentinel_id and bucket_name.
 
     Returns:
-        Dict containing the status and URL of the converted image.
+        Dict containing the status and GCS URI of the converted image.
 
     Raises:
-        HTTPException: If the conversion fails.
+        HTTPException: If conversion or upload fails.
     """
+    # Update status to processing
+    await update_cog_status(image.sentinel_id, "processing")
+
     error_detail = None
     try:
         # Get CDSE access token
@@ -500,9 +553,16 @@ async def convert_to_cog(image: SentinelImage) -> Dict[str, str]:
                 blob = bucket.blob(output_blob_name)
                 blob.upload_from_filename(tmp_output.name)
 
+                # After successful upload, update status to ready
+                gcs_uri = f"gs://{image.bucket_name}/{output_blob_name}"
+                await update_cog_status(
+                    image.sentinel_id, "ready", bucket=image.bucket_name, path=output_blob_name
+                )
+
                 return {
                     "status": "success",
-                    "cog_url": f"gs://{image.bucket_name}/{output_blob_name}",
+                    "message": "Image converted and uploaded successfully",
+                    "gcs_uri": gcs_uri,
                 }
             except Exception as e:
                 error_detail = f"Error uploading to GCS: {str(e)}"
@@ -510,6 +570,8 @@ async def convert_to_cog(image: SentinelImage) -> Dict[str, str]:
                 raise HTTPException(status_code=500, detail=error_detail)
 
     except Exception as e:
+        # Update status back to null on failure
+        await update_cog_status(image.sentinel_id, None)
         if not error_detail:
             error_detail = str(e)
         logger.error(f"Error processing image: {error_detail}")
