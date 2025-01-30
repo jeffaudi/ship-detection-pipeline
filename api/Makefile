@@ -7,6 +7,13 @@ PYTEST=pytest
 ENV=development
 PORT=5454
 
+# Configuration
+PROJECT_ID := dl4eo
+REGION := europe-west1
+SERVICE_NAME := ship-detection-api
+IMAGE_NAME := ship-detection-api
+TAG := latest
+
 # Default target
 all: install test run
 
@@ -71,4 +78,66 @@ clean:
 	find . -type d -name "htmlcov" -exec rm -r {} +
 	rm -rf *.egg-info
 
-.PHONY: all install run test test-watch clean kill-port check-port
+# Local Development
+.PHONY: dev
+dev:
+	uvicorn src.main:app --reload --port 8080
+
+.PHONY: lint
+lint:
+	black .
+	flake8 .
+	isort .
+
+# Security check before docker build
+.PHONY: check-sensitive-files
+check-sensitive-files:
+	@echo "Checking for sensitive files..."
+	@if [ -f .env ]; then \
+		echo "Warning: .env file exists. Make sure it's in .dockerignore"; \
+	fi
+	@if [ -f credentials.json ]; then \
+		echo "Warning: credentials.json exists. Make sure it's in .dockerignore"; \
+	fi
+	@if ls *.key 2>/dev/null; then \
+		echo "Warning: .key files exist. Make sure they're in .dockerignore"; \
+	fi
+	@if ls *.pem 2>/dev/null; then \
+		echo "Warning: .pem files exist. Make sure they're in .dockerignore"; \
+	fi
+
+# Docker Commands
+.PHONY: docker-build
+docker-build: check-sensitive-files
+	docker build -t $(IMAGE_NAME):$(TAG) .
+
+.PHONY: docker-run
+docker-run:
+	docker run -p 8080:8080 --env-file .env $(IMAGE_NAME):$(TAG)
+
+# Google Cloud Commands
+.PHONY: gcloud-build
+gcloud-build:
+	gcloud builds submit --tag gcr.io/$(PROJECT_ID)/$(IMAGE_NAME):$(TAG)
+
+.PHONY: gcloud-deploy
+gcloud-deploy:
+	gcloud run deploy $(SERVICE_NAME) \
+		--image gcr.io/$(PROJECT_ID)/$(IMAGE_NAME):$(TAG) \
+		--platform managed \
+		--region $(REGION) \
+		--allow-unauthenticated \
+		--memory 2Gi \
+		--cpu 2 \
+		--min-instances 0 \
+		--max-instances 10 \
+		--set-env-vars "SUPABASE_URL=$(SUPABASE_URL)" \
+		--set-env-vars "SUPABASE_KEY=$(SUPABASE_KEY)" \
+		--set-env-vars "CDSE_USERNAME=$(CDSE_USERNAME)" \
+		--set-env-vars "CDSE_PASSWORD=$(CDSE_PASSWORD)"
+
+# Combined Commands
+.PHONY: deploy
+deploy: docker-build gcloud-build gcloud-deploy
+
+.PHONY: all install run test test-watch clean kill-port check-port dev lint

@@ -1,7 +1,14 @@
 Flask==2.0.3
 Werkzeug==2.0.3
 Flask-Cors==3.0.10
-supabase==2.11.0
+supabase==2.3.0
 sentinelsat==1.2.1
-requests==2.32.3
+requests==2.31.0
 pandas==2.2.3
+fastapi==0.109.0
+uvicorn==0.27.0
+gunicorn==21.2.0
+python-dotenv==1.0.0
+python-multipart==0.0.6
+pydantic==2.5.3
+httpx==0.26.0

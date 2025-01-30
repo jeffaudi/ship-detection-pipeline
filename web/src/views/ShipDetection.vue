@@ -8,6 +8,7 @@
           :use-global-leaflet="false"
           :options="mapOptions"
           @ready="onMapReady"
+          @zoomend="onZoomEnd"
         >
           <!-- Background OSM layer -->
           <l-tile-layer
@@ -24,7 +25,7 @@
             :options="{
               maxZoom: 20,
               minZoom: 1,
-              maxNativeZoom: 14,
+              maxNativeZoom: 15,
               tileSize: 256,
               opacity: 1,
               crossOrigin: true,
@@ -33,6 +34,7 @@
               keepBuffer: 2,
               maxRequests: 4,
               loading: true,
+              resampling_method: 'lanczos',
               attribution: 'Sentinel-2 imagery'
             }"
             @tileload="onTileLoad"
@@ -41,6 +43,10 @@
             @load="onTileLayerLoad"
           />
         </l-map>
+        <!-- Zoom level indicator -->
+        <div class="zoom-indicator">
+          {{ currentZoom }}
+        </div>
       </div>
     </div>
   </div>
@@ -57,6 +63,7 @@ const route = useRoute();
 const imageUrl = ref(null);
 const cogStatus = ref('not_available');
 const statusPollInterval = ref(null);
+const currentZoom = ref(2); // Initial zoom level
 
 // Function to construct the titiler URL for the COG
 const constructTitilerUrl = () => {
@@ -196,6 +203,10 @@ const onTileLayerLoad = (e) => {
   console.log('Tile layer loaded:', e);
 };
 
+const onZoomEnd = (e) => {
+  currentZoom.value = e.target.getZoom();
+};
+
 // Watch for route changes to restart polling
 watch(
   () => route.params.id,
@@ -259,5 +270,25 @@ defineExpose({
   height: 100%;
   width: 100%;
   background: #f5f5f5;
+}
+
+.zoom-indicator {
+  position: absolute;
+  top: 80px;  /* Adjust position to be under zoom controls */
+  left: 12px;
+  background: rgba(255, 255, 255, 1.0);  /* Slightly transparent white */
+  width: 29px;  /* Fixed square size */
+  height: 29px;  /* Same as width for square shape */
+  border-radius: 4px;
+  box-shadow: 0 1px 5px rgba(0,0,0,0.2);
+  z-index: 400;  /* Below zoom controls (which are 1000) */
+  font-size: 14px;
+  font-weight: bold;
+  color: #000000;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(0,0,0,0.1);
 }
 </style>

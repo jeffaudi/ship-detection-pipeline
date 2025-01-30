@@ -9,6 +9,10 @@ from supabase import Client, create_client
 
 from ..config import Config
 
+# Sentinel-2 product type configuration
+# Use 'S2MSI1C' for Level-1C products or 'S2MSI2A' for Level-2A products
+SENTINEL2_PRODUCT_TYPE = "S2MSI2A"
+
 
 class SentinelService:
     """Service for interacting with Sentinel data."""
@@ -98,7 +102,7 @@ class SentinelService:
             filter_collection = "Collection/Name eq 'SENTINEL-2'"
             filter_product_type = (
                 "Attributes/OData.CSC.StringAttribute/any(att:att/Name eq 'productType' "
-                "and att/Value eq 'S2MSI1C')"
+                f"and att/Value eq '{SENTINEL2_PRODUCT_TYPE}')"
             )
             filter_dates = f"ContentDate/Start gt {date_from} and ContentDate/End lt {date_to}"
             filter_cloud_cover = (

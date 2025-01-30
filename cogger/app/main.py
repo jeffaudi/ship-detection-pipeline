@@ -25,6 +25,16 @@ from rasterio.errors import NotGeoreferencedWarning
 from rio_cogeo.cogeo import cog_translate
 from supabase import Client, create_client
 
+# Sentinel-2 product type configuration
+# Use 'L1C' for Level-1C products or 'L2A' for Level-2A products
+SENTINEL2_PRODUCT_TYPE = "L2A"
+
+# Band patterns for different product types
+BAND_PATTERNS = {
+    "L1C": {"directory": "IMG_DATA", "suffix": ".jp2"},
+    "L2A": {"directory": "R10m", "suffix": "_10m.jp2"},
+}
+
 # Load environment variables
 load_dotenv()
 
@@ -147,6 +157,7 @@ def find_rgb_bands(zip_path: str) -> Dict[str, str]:
     """
     bands: Dict[str, str] = {}
     required_bands = {"B02", "B03", "B04"}  # Blue, Green, Red
+    band_pattern = BAND_PATTERNS[SENTINEL2_PRODUCT_TYPE]
 
     with zipfile.ZipFile(zip_path, "r") as zip_ref:
         # List all files in the ZIP for debugging
@@ -160,8 +171,11 @@ def find_rgb_bands(zip_path: str) -> Dict[str, str]:
         for filename in all_files:
             if filename.endswith(".jp2"):
                 for band in required_bands:
-                    # Match exact band pattern for Sentinel-2 L1C products
-                    if f"_{band}.jp2" in filename and "IMG_DATA" in filename:
+                    # Match band pattern based on product type
+                    if (
+                        f"_{band}{band_pattern['suffix']}" in filename
+                        and band_pattern["directory"] in filename
+                    ):
                         bands[band] = filename
                         logger.info(f"Found {band} band: {filename}")
                         break
@@ -571,7 +585,7 @@ async def convert_to_cog(image: SentinelImage) -> Dict[str, str]:
 
     except Exception as e:
         # Update status back to null on failure
-        await update_cog_status(image.sentinel_id, None)
+        await update_cog_status(image.sentinel_id, "error")
         if not error_detail:
             error_detail = str(e)
         logger.error(f"Error processing image: {error_detail}")
