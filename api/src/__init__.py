@@ -1,43 +1,36 @@
 """Initialization module for the API package."""
 
-from typing import Tuple, Union
+from flask import Flask, jsonify
+from werkzeug.exceptions import HTTPException
 
-from flask import Flask, request
-from flask_cors import CORS
-
-from .routes import api_bp
+from .cors import configure_cors
+from .routes import api_bp, configure_options_handler
+from .static_routes import configure_static_routes
 
 
 def create_app() -> Flask:
     """Create and configure the Flask application."""
     app = Flask(__name__)
 
-    # Configure CORS
-    CORS(
-        app,
-        resources={
-            r"/api/*": {
-                "origins": [
-                    "http://localhost:5173",  # Vite dev server
-                    "http://localhost:8080",  # Vue CLI dev server
-                ],
-                "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-                "allow_headers": ["Content-Type", "Authorization"],
-                "supports_credentials": True,
-            }
-        },
-        expose_headers=["Access-Control-Allow-Origin"],
-    )
+    # Configure components
+    configure_cors(app)
+    configure_static_routes(app)
+    configure_options_handler(app)
 
     # Register blueprints
     app.register_blueprint(api_bp, url_prefix="/api")
 
-    # Add OPTIONS handler
-    @app.before_request
-    def handle_options() -> Union[None, Tuple[str, int]]:
-        """Handle OPTIONS requests."""
-        if request.method == "OPTIONS":
-            return "", 200
-        return None
+    # Register error handlers
+    @app.errorhandler(HTTPException)
+    def handle_http_error(error):
+        """Handle HTTP exceptions and return JSON response."""
+        response = {"error": error.__class__.__name__, "message": error.description}
+        return jsonify(response), error.code
+
+    @app.errorhandler(Exception)
+    def handle_generic_error(error):
+        """Handle any other exceptions and return JSON response."""
+        response = {"error": "InternalServerError", "message": str(error)}
+        return jsonify(response), 500
 
     return app

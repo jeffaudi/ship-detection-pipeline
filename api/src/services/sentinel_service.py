@@ -20,11 +20,11 @@ class SentinelService:
     def __init__(self) -> None:
         """Initialize the SentinelService with Supabase client and CDSE credentials."""
         # Initialize Supabase client
-        self.supabase: Client = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
+        self.supabase: Client = create_client(Config.get_supabase_url(), Config.get_supabase_key())
 
         # CDSE credentials
-        self.cdse_username = Config.CDSE_USERNAME
-        self.cdse_password = Config.CDSE_PASSWORD
+        self.cdse_username = Config.get_cdse_username()
+        self.cdse_password = Config.get_cdse_password()
         self.access_token: Optional[str] = None
         self.token_expiry: Optional[datetime] = None
 
@@ -34,8 +34,10 @@ class SentinelService:
         payload = {
             "client_id": "cdse-public",
             "grant_type": "password",
-            "username": self.cdse_username,
-            "password": self.cdse_password,
+            "username": self.cdse_username.strip(),  # Add strip() to remove whitespace
+            "password": (
+                self.cdse_password.strip() if self.cdse_password else ""
+            ),  # Add strip() to remove whitespace
         }
 
         # Check if the token is still valid
@@ -47,18 +49,28 @@ class SentinelService:
             return self.access_token
 
         try:
+            print(f"Making request to token URL: {token_url}")
+            print(
+                f"Payload (excluding password): {dict(filter(lambda x: x[0] != 'password', payload.items()))}"  # noqa: E501
+            )
             response = requests.post(token_url, data=payload)
+            print(f"Response status code: {response.status_code}")
+            print(f"Response text: {response.text}")
             response.raise_for_status()
             token_data = response.json()
             self.access_token = token_data.get("access_token")
-            expires_in = token_data.get("expires_in", 3600)  # Default to 1 hour if not provided
+            expires_in = token_data.get("expires_in", 3600)
             self.token_expiry = (
                 datetime.now(timezone.utc) + timedelta(seconds=expires_in) - timedelta(seconds=10)
-            )  # noqa: E501
+            )
             return self.access_token
 
         except Exception as e:
             print(f"Error getting access token: {str(e)}")
+            print(f"Exception type: {type(e)}")
+            if hasattr(e, "response"):
+                print(f"Response status code: {e.response.status_code}")
+                print(f"Response text: {e.response.text}")
             raise
 
     def _bbox_to_wkt(self, bbox: Dict[str, float]) -> str:
@@ -142,7 +154,10 @@ class SentinelService:
                 print(f"Query URL: {query_url}")
 
             # Set up headers with the access token
-            headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}
+            headers = {
+                "Authorization": f"Bearer {access_token}",
+                "Accept": "application/json",
+            }
 
             # Execute the query
             response = requests.get(query_url, headers=headers)
@@ -210,7 +225,10 @@ class SentinelService:
         try:
             # Get from CDSE API
             access_token = self._get_access_token()
-            headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}
+            headers = {
+                "Authorization": f"Bearer {access_token}",
+                "Accept": "application/json",
+            }
 
             query_url = f"https://catalogue.dataspace.copernicus.eu/odata/v1/Products('{image_id}')"
             response = requests.get(query_url, headers=headers)

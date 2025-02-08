@@ -1,6 +1,11 @@
 <template>
   <div class="ship-detection">
     <div class="image-panel">
+      <!-- Add error message -->
+      <div v-if="error" class="error-message">
+        {{ error }}
+        <button @click="retryLoading" class="retry-button">Retry</button>
+      </div>
       <div class="image-container">
         <l-map
           ref="map"
@@ -27,7 +32,6 @@
               minZoom: 1,
               maxNativeZoom: 15,
               tileSize: 256,
-              opacity: 1,
               crossOrigin: true,
               updateWhenIdle: true,
               updateWhenZooming: false,
@@ -37,6 +41,7 @@
               resampling_method: 'lanczos',
               attribution: 'Sentinel-2 imagery'
             }"
+            :opacity="layerOpacity"
             @tileload="onTileLoad"
             @tileerror="onTileError"
             @loading="onTileLayerLoading"
@@ -46,6 +51,17 @@
         <!-- Zoom level indicator -->
         <div class="zoom-indicator">
           {{ currentZoom }}
+        </div>
+        <!-- Add opacity control -->
+        <div class="opacity-control">
+          <label>Opacity: {{ Math.round(layerOpacity * 100) }}%</label>
+          <input
+            type="range"
+            v-model.number="layerOpacity"
+            :min="0"
+            :max="1"
+            :step="0.1"
+          />
         </div>
       </div>
     </div>
@@ -65,6 +81,12 @@ const cogStatus = ref('not_available');
 const statusPollInterval = ref(null);
 const currentZoom = ref(2); // Initial zoom level
 
+// Add new refs for loading, error, and opacity states
+const error = ref(null);
+const layerOpacity = ref(1.0);
+const tilesLoaded = ref(0);
+const totalTiles = ref(0);
+
 // Function to construct the titiler URL for the COG
 const constructTitilerUrl = () => {
   const { bucket, path } = route.query;
@@ -74,7 +96,7 @@ const constructTitilerUrl = () => {
   }
 
   // Use titiler to create a web mercator tile layer URL
-  const url = `${config.titilerUrl}/cog/tiles/${bucket}/${path}/{z}/{x}/{y}`;
+  const url = `/proxy/titiler/cog/tiles/${bucket}/${path}/{z}/{x}/{y}`;
   console.log('Constructed titiler URL:', url);
   return url;
 };
@@ -96,7 +118,13 @@ const checkCogStatus = async () => {
   try {
     const identifier = route.params.id;
     console.log('Checking COG status for:', identifier);
-    const response = await fetch(`${config.titilerUrl}/cog/status/${identifier}`);
+    // Use proxy URL instead of direct TiTiler URL
+    const response = await fetch(`/proxy/titiler/cog/status/${identifier}`, {
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json'
+      }
+    });
     if (!response.ok) {
       throw new Error(`Failed to get COG status: ${response.statusText}`);
     }
@@ -138,27 +166,34 @@ const startStatusPolling = () => {
 // Function to get image bounds and update map
 const getImageBounds = async () => {
   const { bucket, path } = route.query;
-  if (!bucket || !path) return;
+  if (!bucket || !path) {
+    error.value = 'Missing image parameters';
+    return;
+  }
+
+  error.value = null;
 
   try {
-    const response = await fetch(`${config.titilerUrl}/cog/info/${bucket}/${path}`);
+    const response = await fetch(`/proxy/titiler/cog/info/${bucket}/${path}`, {
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json'
+      }
+    });
     if (!response.ok) {
       throw new Error(`Failed to get image info: ${response.statusText}`);
     }
     const info = await response.json();
     console.log('Image info:', info);
     if (info.geographic_bounds) {
-      // Convert geographic_bounds from [minx, miny, maxx, maxy] to [[lat, lng], [lat, lng]]
       const bounds = [
-        [info.geographic_bounds[1], info.geographic_bounds[0]],  // [lat, lng] for southwest corner
-        [info.geographic_bounds[3], info.geographic_bounds[2]]   // [lat, lng] for northeast corner
+        [info.geographic_bounds[1], info.geographic_bounds[0]],
+        [info.geographic_bounds[3], info.geographic_bounds[2]]
       ];
       console.log('Setting bounds to:', bounds);
 
-      // Update the bounds ref
       initialBounds.value = bounds;
 
-      // Immediately fit bounds if map is available
       if (map.value?.leafletObject) {
         console.log('Fitting map to bounds');
         map.value.leafletObject.fitBounds(bounds, {
@@ -169,6 +204,7 @@ const getImageBounds = async () => {
     }
   } catch (error) {
     console.error('Error getting image bounds:', error);
+    error.value = 'Failed to load image bounds. Please try again.';
   }
 };
 
@@ -193,9 +229,11 @@ const onTileLoad = (e) => {
 
 const onTileError = (e) => {
   console.error('Tile error:', e);
+  error.value = 'Failed to load image tile. Please try again.';
 };
 
 const onTileLayerLoading = (e) => {
+  error.value = null;
   console.log('Tile layer loading:', e);
 };
 
@@ -245,6 +283,17 @@ onUnmounted(() => {
 defineExpose({
   cogStatus
 });
+
+// Add retry function
+const retryLoading = async () => {
+  error.value = null;
+  try {
+    await getImageBounds();
+    imageUrl.value = constructTitilerUrl();
+  } catch (e) {
+    error.value = 'Failed to load image. Please try again.';
+  }
+};
 </script>
 
 <style scoped>
@@ -290,5 +339,57 @@ defineExpose({
   align-items: center;
   justify-content: center;
   border: 1px solid rgba(0,0,0,0.1);
+}
+
+.error-message {
+  position: absolute;
+  top: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #fff;
+  padding: 10px 20px;
+  border-radius: 4px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #dc3545;
+}
+
+.retry-button {
+  background: #007bff;
+  color: white;
+  border: none;
+  padding: 5px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.retry-button:hover {
+  background: #0056b3;
+}
+
+.opacity-control {
+  position: absolute;
+  bottom: 20px;
+  right: 20px;
+  background: white;
+  padding: 10px;
+  border-radius: 4px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.opacity-control label {
+  font-size: 12px;
+  color: #333;
+}
+
+.opacity-control input {
+  width: 100px;
 }
 </style>

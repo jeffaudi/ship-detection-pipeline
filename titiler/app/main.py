@@ -4,6 +4,7 @@ This module provides a FastAPI application that serves COG files with tile, info
 and preview endpoints.
 """
 
+import json
 import logging
 import os
 from pathlib import Path
@@ -17,6 +18,9 @@ from fastapi import APIRouter, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
+from google.cloud import storage
+from google.oauth2 import service_account
+from middleware import APIKeyMiddleware
 from PIL import Image, ImageFilter
 from rio_tiler.io import COGReader
 from rio_tiler.utils import render
@@ -30,7 +34,7 @@ load_dotenv()
 
 # Configure logging
 logging.basicConfig(
-    level=logging.DEBUG, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
@@ -52,22 +56,60 @@ app = FastAPI(
     description="A simple TiTiler application to serve COG files from local and Google Cloud Storage",  # noqa: E501
 )
 
+# Add API Key middleware
+app.add_middleware(APIKeyMiddleware)
+
+# Retrieve Google Application Credentials from Secret Manager
+credentials_json = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON").strip()
+logger.info(f"Credentials JSON: {credentials_json}")
+if credentials_json:
+    try:
+        # Create a temporary file in /tmp (which is writable in Cloud Run)
+        with open("/app/credentials.json", "w") as f:
+            f.write(credentials_json)
+        logger.info("Credentials file created at /app/credentials.json")
+    except Exception as e:
+        logger.error(f"Failed to create credentials file: {str(e)}")
+        raise
+
 # Configure GDAL for GCS authentication
+os.environ["CPL_GS_USE_SERVICE_ACCOUNT"] = "YES"  # Tell GDAL to use service account authentication
 os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "/app/credentials.json"
+
+# Optional: Configure other GDAL settings for GCS
+os.environ["CPL_GS_MAX_RETRY"] = "5"  # Number of retries for failed requests
+os.environ["CPL_GS_RETRY_DELAY"] = "1"  # Delay between retries in seconds
+os.environ["VSI_CACHE"] = "TRUE"  # Enable VSI caching
+os.environ["VSI_CACHE_SIZE"] = "1000000"  # Cache size in bytes
+
 os.environ["GDAL_HTTP_COOKIEFILE"] = "/vsimem/cookies.txt"
 os.environ["GDAL_HTTP_COOKIEJAR"] = "/vsimem/cookies.txt"
+os.environ["GDAL_HTTP_MERGE_CONSECUTIVE_RANGES"] = "YES"
+os.environ["GDAL_HTTP_MULTIPLEX"] = "YES"
+os.environ["GDAL_HTTP_VERSION"] = "2"
+
 os.environ["CPL_VSIL_CURL_ALLOWED_EXTENSIONS"] = ".tif"
 os.environ["GDAL_DISABLE_READDIR_ON_OPEN"] = "EMPTY_DIR"
-os.environ["VSI_CACHE"] = "TRUE"
-os.environ["VSI_CACHE_SIZE"] = "1000000"
+
+os.environ["GDAL_CACHEMAX"] = "512"
+os.environ["GDAL_BAND_BLOCK_CACHE"] = "YES"
+os.environ["GDAL_INGESTED_BYTES_AT_OPEN"] = "32768"
+os.environ["GDAL_CACHEMAX_BYTES"] = "536870912"
+
 
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:8080",  # Local development
+        "http://localhost:5173",  # Vite dev server
+        "http://localhost:4173",  # Vite preview server
+        "https://ship-pipeline-web-577713910386.europe-west1.run.app",  # Production
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 # Mount static files
@@ -400,13 +442,65 @@ async def read_root() -> RedirectResponse:
 
 
 @app.get("/health")
-async def health_check() -> Dict[str, str]:
-    """Health check endpoint.
+async def health_check():
+    """Health check endpoint that verifies service dependencies.
 
     Returns:
-        Dict containing the service health status.
+        dict: Health status of the service and its dependencies.
     """
-    return {"status": "healthy"}
+    try:
+        # Check services
+        services_status = {"google_storage": False, "supabase": False}
+
+        # Check Google Storage connection
+        try:
+            # Load credentials from the environment variable if it exists
+            if "GOOGLE_APPLICATION_CREDENTIALS" in os.environ:
+                # Check if the variable is a filepath or a JSON string
+                if os.path.exists(os.environ["GOOGLE_APPLICATION_CREDENTIALS"]):
+                    credentials = service_account.Credentials.from_service_account_file(
+                        os.environ["GOOGLE_APPLICATION_CREDENTIALS"]
+                    )
+                else:
+                    credentials = service_account.Credentials.from_service_account_info(
+                        json.loads(os.environ["GOOGLE_APPLICATION_CREDENTIALS"])
+                    )
+                storage_client = storage.Client(credentials=credentials)
+                logger.info("Using service account credentials")
+            else:
+                storage_client = storage.Client()
+                logger.info("Using default credentials")
+
+            # List contents of the bucket
+            bucket_name = os.getenv("GCS_BUCKET_NAME", "dl4eo-sentinel2-cogs")
+            bucket = storage_client.bucket(bucket_name)
+            # Just display one blob to verify access
+            blob = next(bucket.list_blobs(max_results=1), None)
+            logger.info(f"Listing first blob from bucket {bucket_name}: {blob}")
+            # NOTE: this checks access from the code, not from GDAL.
+            services_status["google_storage"] = True
+        except Exception as e:
+            logger.error(f"Google Storage error: {str(e)}")
+            services_status["google_storage"] = False
+
+        # Check Supabase connection
+        try:
+            # Try to query the sentinel2_cogs table
+            supabase.table("sentinel2_cogs").select("*").limit(1).execute()
+            services_status["supabase"] = True
+        except Exception as e:
+            logger.error(f"Supabase error: {str(e)}")
+            services_status["supabase"] = False
+
+        return {
+            "status": "healthy" if all(services_status.values()) else "degraded",
+            "services": services_status,
+            "version": "0.1.0",
+        }
+
+    except Exception as e:
+        logger.error(f"Health check error: {str(e)}")
+        return {"status": "unhealthy", "error": str(e), "version": "0.1.0"}, 500
 
 
 if __name__ == "__main__":

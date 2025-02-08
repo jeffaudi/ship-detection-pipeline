@@ -164,33 +164,46 @@ const isBoundingBoxValid = computed(() => {
 const searchImages = async () => {
   loading.value = true;
   try {
-    const response = await fetch(`${config.apiUrl}/sentinel/search`, {
+    const requestBody = {
+      bbox: [
+        [parseFloat(west.value), parseFloat(south.value)],
+        [parseFloat(east.value), parseFloat(north.value)],
+      ],
+      date_from: dateFrom.value,
+      date_to: dateTo.value,
+      cloud_cover: parseInt(cloudCover.value),
+    };
+    console.log('Request body:', requestBody);
+
+    const response = await fetch('/proxy/api/sentinel/search', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Accept: 'application/json',
+        Accept: 'application/json'
       },
-      mode: 'cors',
-      body: JSON.stringify({
-        bbox: [
-          [parseFloat(west.value), parseFloat(south.value)],
-          [parseFloat(east.value), parseFloat(north.value)],
-        ],
-        date_from: dateFrom.value,
-        date_to: dateTo.value,
-        cloud_cover: parseInt(cloudCover.value),
-      }),
+      body: JSON.stringify(requestBody),
     });
 
-    const data = await response.json();
+    let data;
+    try {
+      data = await response.json();
+    } catch (parseError) {
+      console.error('Error parsing JSON response:', parseError);
+      throw new Error('Invalid response from server');
+    }
+
     if (!response.ok) {
-      throw new Error(data.error || 'API request failed');
+      throw new Error(data.message || data.error || 'API request failed');
     }
 
     images.value = data.results || [];
+    if (images.value.length === 0) {
+      console.log('No images found for the given criteria');
+    }
   } catch (error) {
     console.error('Error searching images:', error);
     images.value = [];
+    throw error;
   } finally {
     loading.value = false;
   }
@@ -205,14 +218,36 @@ const statusPollInterval = ref(null); // Add ref for the polling interval
 
 // Computed property for action button text
 const actionButtonText = computed(() => {
-  if (ingesting.value) return 'Ingesting...';
+  if (ingesting.value) return 'Ingesting... (This will take some time)';
   switch (cogStatus.value) {
     case 'ready':
       return 'Visualize Image';
     case 'processing':
       return 'Processing Image';
+    case 'error':
+      return 'Retry Ingestion';
     default:
       return 'Ingest Image';
+  }
+});
+
+// Watch for COG status changes and update the ingest status
+watch(cogStatus, (newStatus) => {
+  if (newStatus === 'ready') {
+    ingestStatus.value = {
+      type: 'success',
+      message: 'Image is ready for visualization!'
+    };
+  } else if (newStatus === 'processing') {
+    ingestStatus.value = {
+      type: 'info',
+      message: 'Image is being processed... This will take some time.'
+    };
+  } else if (newStatus === 'error') {
+    ingestStatus.value = {
+      type: 'error',
+      message: 'Failed to process image. Please try again.'
+    };
   }
 });
 
@@ -220,7 +255,7 @@ const actionButtonText = computed(() => {
 const checkCogStatus = async (identifier) => {
   try {
     console.log('Checking COG status for:', identifier);
-    const response = await fetch(`${config.titilerUrl}/cog/status/${identifier}`);
+    const response = await fetch(`/proxy/titiler/cog/status/${identifier}`);
     const data = await response.json();
     console.log('COG status response:', data);
     cogStatus.value = data.status;
@@ -238,7 +273,11 @@ const checkCogStatus = async (identifier) => {
     }
   } catch (error) {
     console.error('Error checking COG status:', error);
-    cogStatus.value = 'not_available';
+    cogStatus.value = 'error';
+    ingestStatus.value = {
+      type: 'error',
+      message: `Error checking status: ${error.message}`
+    };
   }
 };
 
@@ -280,7 +319,7 @@ const startStatusPolling = async (identifier) => {
 
 const selectImage = async (image) => {
   selectedImage.value = image;
-  quicklookUrl.value = `${config.apiUrl}/sentinel/${image.identifier}/quicklook`;
+  quicklookUrl.value = `/proxy/api/sentinel/${image.identifier}/quicklook`;
   await checkCogStatus(image.identifier);
 };
 
@@ -293,31 +332,47 @@ const ingestImage = async () => {
 
   try {
     ingesting.value = true;
-    ingestStatus.value = { type: 'info', message: 'Ingesting image...' };
+    ingestStatus.value = { type: 'info', message: 'Starting image ingestion...' };
 
-    const response = await fetch(`${config.coggerUrl}/convert`, {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 3660000); // 1 hour + 1 minute timeout
+
+    const response = await fetch('/proxy/cogger/convert', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Accept: 'application/json',
+        Accept: 'application/json'
       },
+      signal: controller.signal,
       body: JSON.stringify({
         sentinel_id: selectedImage.value.identifier,
       }),
     });
 
-    const data = await response.json();
+    clearTimeout(timeoutId);
+
     if (!response.ok) {
-      throw new Error(data.detail || 'Failed to start ingestion');
+      const error = await response.json();
+      throw new Error(error.detail || 'Failed to start ingestion');
     }
 
+    const data = await response.json();
     cogStatus.value = 'processing';
-    ingestStatus.value = { type: 'success', message: 'Image ingestion started!' };
+    ingestStatus.value = {
+      type: 'info',
+      message: 'Image ingestion started! This will take some time...'
+    };
     startStatusPolling(selectedImage.value.identifier);
 
   } catch (error) {
     console.error('Error ingesting image:', error);
-    ingestStatus.value = { type: 'error', message: `Failed to ingest image: ${error.message}` };
+    ingestStatus.value = {
+      type: 'error',
+      message: error.name === 'AbortError'
+        ? 'Request timed out after 1 hour. Please try again.'
+        : `Failed to ingest image: ${error.message}`
+    };
+    cogStatus.value = 'error';
   } finally {
     ingesting.value = false;
   }
@@ -335,11 +390,10 @@ const startAnnotation = () => {
 
 const getImageMetadata = async (imageId) => {
   try {
-    const response = await fetch(`${config.apiUrl}/sentinel/${imageId}`, {
+    const response = await fetch(`/proxy/api/sentinel/${imageId}`, {
       headers: {
-        Accept: 'application/json',
-      },
-      mode: 'cors',
+        Accept: 'application/json'
+      }
     });
 
     if (!response.ok) {

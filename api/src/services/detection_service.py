@@ -14,12 +14,15 @@ class DetectionService:
     def __init__(self) -> None:
         """Initialize the DetectionService."""
         # Initialize Supabase client
-        supabase_url = Config.SUPABASE_URL
-        supabase_key = Config.SUPABASE_KEY
+        supabase_url = Config.get_supabase_url()
+        supabase_key = Config.get_supabase_key()
         self.supabase: Client = create_client(supabase_url, supabase_key)
 
     def detect_ships(
-        self, image_id: str, bbox: Optional[List[List[float]]] = None, confidence: float = 0.5
+        self,
+        image_id: str,
+        bbox: Optional[List[List[float]]] = None,
+        confidence: float = 0.5,
     ) -> Dict[str, Any]:
         """Detect ships in a Sentinel image.
 

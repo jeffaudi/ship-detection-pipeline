@@ -13,8 +13,8 @@ class AnnotationService:
     def __init__(self) -> None:
         """Initialize the AnnotationService."""
         # Initialize Supabase client
-        supabase_url = Config.SUPABASE_URL
-        supabase_key = Config.SUPABASE_KEY
+        supabase_url = Config.get_supabase_url()
+        supabase_key = Config.get_supabase_key()
         self.supabase: Client = create_client(supabase_url, supabase_key)
 
     def create_annotation(self, data: Dict[str, Any]) -> Dict[str, Any]:

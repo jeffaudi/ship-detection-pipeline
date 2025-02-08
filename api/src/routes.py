@@ -6,6 +6,7 @@ import requests
 from flask import Blueprint, Response, request
 from flask.wrappers import Response as FlaskResponse
 
+from .middleware import require_api_key
 from .services.annotation_service import AnnotationService
 from .services.detection_service import DetectionService
 from .services.sentinel_service import SentinelService
@@ -16,6 +17,21 @@ api_bp = Blueprint("api", __name__)
 sentinel_service = SentinelService()
 detection_service = DetectionService()
 annotation_service = AnnotationService()
+
+
+def configure_options_handler(app):
+    """Configure OPTIONS request handler.
+
+    Args:
+        app: The Flask application instance.
+    """
+
+    @app.before_request
+    def handle_options() -> Union[None, Tuple[str, int]]:
+        """Handle OPTIONS requests."""
+        if request.method == "OPTIONS":
+            return "", 200
+        return None
 
 
 @api_bp.route("/health", methods=["GET"])
@@ -56,13 +72,18 @@ def health_check() -> Tuple[Dict[str, Any], int]:
             print(f"Supabase error: {str(e)}")
             services_status["supabase"] = False
 
-        return {"status": "healthy", "services": services_status, "version": "0.1.0"}, 200
+        return {
+            "status": "healthy",
+            "services": services_status,
+            "version": "0.1.0",
+        }, 200
     except Exception as e:
         return {"status": "unhealthy", "error": str(e)}, 500
 
 
 # Sentinel image routes
 @api_bp.route("/sentinel/search", methods=["POST"])
+@require_api_key
 def search_images() -> Tuple[Dict[str, Any], int]:
     """Search for Sentinel images based on provided criteria.
 
@@ -112,6 +133,7 @@ def search_images() -> Tuple[Dict[str, Any], int]:
 
 
 @api_bp.route("/sentinel/<image_id>", methods=["GET"])
+@require_api_key
 def get_image_metadata(image_id: str) -> Tuple[Dict[str, Any], int]:
     """Get metadata for a specific Sentinel image.
 
@@ -129,7 +151,10 @@ def get_image_metadata(image_id: str) -> Tuple[Dict[str, Any], int]:
 
 
 @api_bp.route("/sentinel/<image_id>/quicklook", methods=["GET"])
-def get_image_quicklook(image_id: str) -> Union[FlaskResponse, Tuple[Dict[str, Any], int]]:
+@require_api_key
+def get_image_quicklook(
+    image_id: str,
+) -> Union[FlaskResponse, Tuple[Dict[str, Any], int]]:
     """Get quicklook preview for a specific Sentinel image.
 
     Args:
@@ -193,6 +218,7 @@ def get_image_quicklook(image_id: str) -> Union[FlaskResponse, Tuple[Dict[str, A
 
 # Detection routes
 @api_bp.route("/detect", methods=["POST"])
+@require_api_key
 def detect_ships() -> Tuple[Dict[str, Any], int]:
     """Detect ships in a given image.
 
@@ -202,7 +228,9 @@ def detect_ships() -> Tuple[Dict[str, Any], int]:
     data = request.json
     try:
         results = detection_service.detect_ships(
-            image_id=data["image_id"], bbox=data.get("bbox"), confidence=data.get("confidence", 0.5)
+            image_id=data["image_id"],
+            bbox=data.get("bbox"),
+            confidence=data.get("confidence", 0.5),
         )
         return results, 200
     except Exception as e:
@@ -210,6 +238,7 @@ def detect_ships() -> Tuple[Dict[str, Any], int]:
 
 
 @api_bp.route("/detections/<detection_id>", methods=["GET"])
+@require_api_key
 def get_detection(detection_id: str) -> Tuple[Dict[str, Any], int]:
     """Get detection results for a specific detection ID.
 
@@ -228,6 +257,7 @@ def get_detection(detection_id: str) -> Tuple[Dict[str, Any], int]:
 
 # Annotation routes
 @api_bp.route("/annotations", methods=["POST"])
+@require_api_key
 def create_annotation() -> Tuple[Dict[str, Any], int]:
     """Create a new annotation.
 
@@ -243,6 +273,7 @@ def create_annotation() -> Tuple[Dict[str, Any], int]:
 
 
 @api_bp.route("/annotations/<annotation_id>", methods=["PUT"])
+@require_api_key
 def update_annotation(annotation_id: str) -> Tuple[Dict[str, Any], int]:
     """Update an existing annotation.
 

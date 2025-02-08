@@ -24,14 +24,6 @@ ENV GDAL_HTTP_VERSION=2
 ENV VSI_CACHE=TRUE
 ENV VSI_CACHE_SIZE=536870912
 
-# Set Google Cloud service account
-ENV GCP_PROJECT=deep-learning-earth
-ENV GCP_SERVICE_ACCOUNT=ship-detection-pipeline@deep-learning-earth.iam.gserviceaccount.com
-
-# Set CDSE credentials (to be provided at runtime)
-ENV CDSE_USERNAME=""
-ENV CDSE_PASSWORD=""
-
 # Set working directory
 WORKDIR /app
 
@@ -39,7 +31,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy only the app directory
+# Copy the app files
 COPY app/ .
 
 # Container configuration

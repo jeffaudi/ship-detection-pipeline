@@ -11,6 +11,7 @@ import tempfile
 import warnings
 import zipfile
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -19,7 +20,11 @@ import requests
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from google.cloud import storage
+from google.oauth2 import service_account
+from middleware import APIKeyMiddleware
 from pydantic import BaseModel
 from rasterio.errors import NotGeoreferencedWarning
 from rio_cogeo.cogeo import cog_translate
@@ -59,18 +64,34 @@ except Exception as e:
 
 app = FastAPI(title="Sentinel COG Converter")
 
+# Add API Key middleware
+app.add_middleware(APIKeyMiddleware)
+
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:8080",  # Frontend URL
-        "http://127.0.0.1:8080",  # Local IP variant
+        "http://localhost:8080",  # Local development
+        "http://localhost:5173",  # Vite dev server
+        "http://localhost:4173",  # Vite preview server
+        "https://ship-pipeline-web-577713910386.europe-west1.run.app",  # Production
     ],
-    allow_credentials=False,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["*"],
 )
+
+# Mount static files directory
+static_path = Path(__file__).parent / "static"
+app.mount("/static", StaticFiles(directory=str(static_path)), name="static")
+
+
+# Add favicon route
+@app.get("/favicon.ico")
+async def favicon():
+    """Serve the favicon."""
+    return FileResponse(str(static_path / "favicon.ico"))
 
 
 class SentinelImage(BaseModel):
@@ -184,7 +205,9 @@ def find_rgb_bands(zip_path: str) -> Dict[str, str]:
     if missing_bands:
         logger.error(f"Missing bands: {missing_bands}")
         logger.error("Please check the ZIP structure and band naming patterns")
-        raise ValueError(f"Missing required bands: {missing_bands}")
+        raise ValueError(
+            f"Missing required bands: {missing_bands}. Maybe this is not a {SENTINEL2_PRODUCT_TYPE} product?"  # noqa: E501
+        )
 
     logger.info("Found all required band files:")
     for band, filename in bands.items():
@@ -422,6 +445,73 @@ async def root():
     return {"message": "Sentinel COG Converter Service"}
 
 
+@app.get("/health")
+async def health_check():
+
+    try:
+        # Check services
+        services_status = {"sentinel_api": False, "google_storage": False, "supabase": False}
+
+        # Check CDSE API connection
+        try:
+            # Get access token and make a simple query
+            access_token = cdse_auth.get_access_token()
+            headers = {
+                "Authorization": f"Bearer {access_token}",
+                "Accept": "application/json",
+            }
+            query_url = (
+                "https://catalogue.dataspace.copernicus.eu/odata/v1/Products?"
+                "$filter=Collection/Name eq 'SENTINEL-2'&$top=1"
+            )
+            response = requests.get(query_url, headers=headers)
+            response.raise_for_status()
+            services_status["sentinel_api"] = True
+        except Exception as e:
+            print(f"CDSE API error: {str(e)}")
+            services_status["sentinel_api"] = False
+
+        # Check Google Storage connection
+        try:
+            # Load credentials from the environment variable if it exists
+            if "GOOGLE_APPLICATION_CREDENTIALS" in os.environ:
+                credentials = service_account.Credentials.from_service_account_file(
+                    os.environ["GOOGLE_APPLICATION_CREDENTIALS"]
+                )
+                storage_client = storage.Client(credentials=credentials)
+            else:
+                storage_client = storage.Client()
+
+            # List contents of the bucket
+            print(f"GCS_BUCKET_NAME: {os.getenv('GCS_BUCKET_NAME')}")
+            bucket_name = os.getenv("GCS_BUCKET_NAME", "dl4eo-sentinel2-cogs")
+            bucket = storage_client.bucket(bucket_name)
+            blobs = bucket.list_blobs(max_results=1)
+            logger.info(f"Displaying first GCS blob: {blobs}")
+
+            services_status["google_storage"] = True
+        except Exception as e:
+            print(f"Google Storage error: {str(e)}")
+            services_status["google_storage"] = False
+
+        # Check Supabase connection
+        try:
+            supabase.table("sentinel2_cogs").select("*").limit(1).execute()
+            services_status["supabase"] = True
+        except Exception as e:
+            print(f"Supabase error: {str(e)}")
+            services_status["supabase"] = False
+
+        return {
+            "status": "healthy",
+            "services": services_status,
+            "version": "0.1.0",
+        }, 200
+
+    except Exception as e:
+        return {"status": "unhealthy", "error": str(e)}, 500
+
+
 async def update_cog_status(
     identifier: str, status: str, bucket: Optional[str] = None, path: Optional[str] = None
 ) -> None:
@@ -556,8 +646,16 @@ async def convert_to_cog(image: SentinelImage) -> Dict[str, str]:
 
             # Upload to GCS
             try:
+                # Load credentials from the environment variable if it exists
+                if "GOOGLE_APPLICATION_CREDENTIALS_FILE" in os.environ:
+                    credentials = service_account.Credentials.from_service_account_file(
+                        os.environ["GOOGLE_APPLICATION_CREDENTIALS_FILE"]
+                    )
+                    storage_client = storage.Client(credentials=credentials)
+                else:
+                    storage_client = storage.Client()
+
                 logger.info(f"Uploading to GCS bucket: {image.bucket_name}")
-                storage_client = storage.Client()
                 bucket = storage_client.bucket(image.bucket_name)
 
                 if not os.path.exists(tmp_output.name):
@@ -592,16 +690,6 @@ async def convert_to_cog(image: SentinelImage) -> Dict[str, str]:
         if hasattr(e, "response"):
             logger.error(f"Response content: {e.response.text}")
         raise HTTPException(status_code=500, detail=error_detail)
-
-
-@app.get("/health")
-async def health_check() -> Dict[str, str]:
-    """Health check endpoint.
-
-    Returns:
-        Dict containing the service status.
-    """
-    return {"status": "healthy"}
 
 
 if __name__ == "__main__":

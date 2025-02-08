@@ -9,17 +9,13 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy only necessary files
-COPY requirements.txt .
-COPY setup.py .
-COPY src ./src
-COPY wsgi.py .
-
 # Install dependencies
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install the package in development mode
-RUN pip install -e .
+# Copy only necessary files
+COPY src ./src
+COPY wsgi.py .
 
 # Set environment variables
 ENV PORT=8080
