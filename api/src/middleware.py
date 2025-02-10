@@ -1,6 +1,4 @@
-"""
-Enforce API key validation for protected routes.
-"""
+""" Enforce API key validation for protected routes. """
 
 from functools import wraps
 

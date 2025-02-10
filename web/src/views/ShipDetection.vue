@@ -6,14 +6,21 @@
         {{ error }}
         <button @click="retryLoading" class="retry-button">Retry</button>
       </div>
+
+      <!-- Drawing status message -->
+      <div v-if="drawingStatus" class="drawing-status">
+        {{ drawingStatus }}
+      </div>
+
       <div class="image-container">
         <l-map
-          ref="map"
+          ref="mapRef"
           :bounds="initialBounds"
           :use-global-leaflet="false"
           :options="mapOptions"
           @ready="onMapReady"
           @zoomend="onZoomEnd"
+          @click="handleMapClick"
         >
           <!-- Background OSM layer -->
           <l-tile-layer
@@ -47,12 +54,85 @@
             @loading="onTileLayerLoading"
             @load="onTileLayerLoad"
           />
+
+          <!-- Drawing points visualization -->
+          <l-polyline
+            v-if="drawingPoints.length > 0 && isDrawingMode"
+            :lat-lngs="drawingPoints"
+            :color="'#FF4081'"
+            :weight="2"
+            :dash-array="'5, 10'"
+          />
+
+          <!-- First point marker for ship box -->
+          <l-circle
+            v-if="drawingPoints.length > 0 && isDrawingMode"
+            :lat-lng="drawingPoints[0]"
+            :radius="5"
+            :color="'#FF4081'"
+            :fillColor="'#FF4081'"
+            :fillOpacity="1"
+            :weight="2"
+          />
+
+          <!-- Confuser drawing points visualization -->
+          <l-polyline
+            v-if="confuserPoints.length > 0 && isDrawingConfuser"
+            :lat-lngs="[...confuserPoints, ...(lastMousePosition && !isNearFirstPoint(lastMousePosition, confuserPoints[0], currentZoom.value) ? [lastMousePosition] : []), ...(confuserPoints.length > 2 && lastMousePosition && isNearFirstPoint(lastMousePosition, confuserPoints[0], currentZoom.value) ? [confuserPoints[0]] : [])]"
+            :color="'#FFA000'"
+            :weight="2"
+            :dashArray="confuserPoints.length > 2 && lastMousePosition && isNearFirstPoint(lastMousePosition, confuserPoints[0], currentZoom.value) ? '' : '5, 10'"
+          />
+
+          <!-- First point marker for confuser polygon -->
+          <l-circle
+            v-if="confuserPoints.length > 0 && isDrawingConfuser"
+            :lat-lng="confuserPoints[0]"
+            :radius="5"
+            :color="'#FFA000'"
+            :fillColor="'#FFA000'"
+            :fillOpacity="1"
+            :weight="2"
+          />
+
+          <!-- Drawn boxes visualization with selection -->
+          <l-polygon
+            v-for="(box, index) in drawnBoxes"
+            :key="'box-' + index"
+            :lat-lngs="box"
+            :color="selectedAnnotation?.type === 'box' && selectedAnnotation?.index === index ? '#FF4081' : '#4A148C'"
+            :weight="selectedAnnotation?.type === 'box' && selectedAnnotation?.index === index ? 3 : 2"
+            :fillOpacity="selectedAnnotation?.type === 'confuser' && selectedAnnotation?.index === index ? 0.3 : 0.1"
+            @click="selectAnnotation('box', index, $event)"
+            :interactive="true"
+            :className="isSelectionMode ? 'selectable-annotation' : ''"
+          />
+
+          <!-- Drawn confusers visualization with selection -->
+          <l-polygon
+            v-for="(confuser, index) in drawnConfusers"
+            :key="'confuser-' + index"
+            :lat-lngs="confuser"
+            :color="selectedAnnotation?.type === 'confuser' && selectedAnnotation?.index === index ? '#FF4081' : '#FFA000'"
+            :weight="selectedAnnotation?.type === 'confuser' && selectedAnnotation?.index === index ? 3 : 2"
+            :fillOpacity="selectedAnnotation?.type === 'confuser' && selectedAnnotation?.index === index ? 0.3 : 0.1"
+            @click="selectAnnotation('confuser', index, $event)"
+            :interactive="true"
+            :className="isSelectionMode ? 'selectable-annotation' : ''"
+          />
         </l-map>
         <!-- Zoom level indicator -->
         <div class="zoom-indicator">
           {{ currentZoom }}
         </div>
-        <!-- Add opacity control -->
+      </div>
+    </div>
+
+    <!-- Control Panel -->
+    <div class="control-panel">
+      <!-- Image Controls Section -->
+      <div class="control-section">
+        <h3>Image Controls</h3>
         <div class="opacity-control">
           <label>Opacity: {{ Math.round(layerOpacity * 100) }}%</label>
           <input
@@ -64,14 +144,79 @@
           />
         </div>
       </div>
+
+      <!-- Ship Detection Section -->
+      <div class="control-section">
+        <h3>Ship Detection</h3>
+        <!-- Empty for now as controls moved to Annotation -->
+      </div>
+
+      <!-- Annotation Section -->
+      <div class="control-section">
+        <h3>Annotation</h3>
+        <div class="annotation-controls">
+          <div class="drawing-tools">
+            <button
+              class="control-button"
+              :class="{ active: isDrawingMode }"
+              @click="toggleDrawingMode"
+            >
+              {{ isDrawingMode ? 'Cancel Drawing' : 'Draw Ship Box' }}
+            </button>
+            <button
+              class="control-button"
+              :class="{ active: isDrawingConfuser }"
+              @click="toggleConfuserMode"
+            >
+              {{ isDrawingConfuser ? 'Cancel Drawing' : 'Draw Confuser Polygon' }}
+            </button>
+            <button
+              class="control-button"
+              :class="{ active: isSelectionMode }"
+              @click="toggleSelectionMode"
+            >
+              {{ isSelectionMode ? 'Exit Selection' : 'Select Object' }}
+            </button>
+          </div>
+
+          <!-- Selection tools -->
+          <div v-if="selectedAnnotation" class="selection-tools">
+            <div class="selection-info">
+              <span>Selected: {{ selectedAnnotation.type === 'box' ? 'Ship Box' : 'Confuser' }} {{ selectedAnnotation.index + 1 }}</span>
+            </div>
+            <div class="selection-actions">
+              <button
+                class="control-button delete-button"
+                @click="deleteSelected"
+              >
+                Delete Selected
+              </button>
+              <button
+                class="control-button"
+                @click="clearSelection"
+              >
+                Deselect
+              </button>
+            </div>
+          </div>
+
+          <button
+            class="control-button clear-button"
+            @click="clearAll"
+            :disabled="drawnBoxes.length === 0 && drawnConfusers.length === 0"
+          >
+            Clear All
+          </button>
+        </div>
+      </div>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted, watch } from 'vue';
+import { ref, onMounted, onUnmounted, watch, computed } from 'vue';
 import { useRoute } from 'vue-router';
-import { LMap, LTileLayer } from '@vue-leaflet/vue-leaflet';
+import { LMap, LTileLayer, LPolyline, LPolygon, LCircle } from '@vue-leaflet/vue-leaflet';
 import 'leaflet/dist/leaflet.css';
 import config from '../config';
 
@@ -87,6 +232,25 @@ const layerOpacity = ref(1.0);
 const tilesLoaded = ref(0);
 const totalTiles = ref(0);
 
+// Add new refs for drawing
+const isDrawingMode = ref(false);
+const drawingPoints = ref([]);
+const drawnBoxes = ref([]);
+const mapRef = ref(null);
+const leafletMap = ref(null);
+
+// Add new refs for confuser drawing
+const isDrawingConfuser = ref(false);
+const confuserPoints = ref([]);
+const drawnConfusers = ref([]);
+const lastMousePosition = ref(null);
+
+// Add new refs for selection
+const selectedAnnotation = ref(null);
+
+// Add new ref for selection mode
+const isSelectionMode = ref(false);
+
 // Function to construct the titiler URL for the COG
 const constructTitilerUrl = () => {
   const { bucket, path } = route.query;
@@ -101,8 +265,6 @@ const constructTitilerUrl = () => {
   return url;
 };
 
-// Add map ref and initial bounds
-const map = ref(null);
 // Set initial bounds to show most of the world
 const initialBounds = ref([[-60, -180], [60, 180]]);
 const mapOptions = {
@@ -194,9 +356,9 @@ const getImageBounds = async () => {
 
       initialBounds.value = bounds;
 
-      if (map.value?.leafletObject) {
+      if (mapRef.value?.leafletObject) {
         console.log('Fitting map to bounds');
-        map.value.leafletObject.fitBounds(bounds, {
+        mapRef.value.leafletObject.fitBounds(bounds, {
           padding: [50, 50],
           maxZoom: 14
         });
@@ -208,20 +370,239 @@ const getImageBounds = async () => {
   }
 };
 
-const onMapReady = (e) => {
-  // Store map reference when ready
-  map.value = e.sourceTarget;
-  console.log('Map is ready');
+// Function to calculate the oriented bounding box points
+const calculateOBB = (stern, bow, side) => {
+  // Calculate ship direction vector
+  const dx = bow[0] - stern[0];
+  const dy = bow[1] - stern[1];
+  const length = Math.sqrt(dx * dx + dy * dy);
 
-  // If we already have bounds, fit to them
+  // Normalize direction vector
+  const dirX = dx / length;
+  const dirY = dy / length;
+
+  // Calculate perpendicular vector
+  const perpX = -dirY;
+  const perpY = dirX;
+
+  // Calculate width using the side point
+  const toSideX = side[0] - stern[0];
+  const toSideY = side[1] - stern[1];
+  const width = Math.abs(toSideX * perpX + toSideY * perpY) * 2;
+
+  // Calculate the four corners of the box
+  const halfWidth = width / 2;
+  return [
+    [
+      stern[0] + perpX * halfWidth,
+      stern[1] + perpY * halfWidth
+    ],
+    [
+      bow[0] + perpX * halfWidth,
+      bow[1] + perpY * halfWidth
+    ],
+    [
+      bow[0] - perpX * halfWidth,
+      bow[1] - perpY * halfWidth
+    ],
+    [
+      stern[0] - perpX * halfWidth,
+      stern[1] - perpY * halfWidth
+    ],
+    [
+      stern[0] + perpX * halfWidth,
+      stern[1] + perpY * halfWidth
+    ] // Close the polygon
+  ];
+};
+
+// Function to handle map clicks
+const handleMapClick = (e) => {
+  // If we're in selection mode and clicked on the map (not an annotation),
+  // clear the selection
+  if (isSelectionMode.value && !e.originalEvent.defaultPrevented) {
+    clearSelection();
+    return;
+  }
+
+  // Rest of the existing handleMapClick code...
+  if (isDrawingMode.value) {
+    const clickedPoint = [e.latlng.lat, e.latlng.lng];
+    console.log('Adding point:', clickedPoint);
+    drawingPoints.value = [...drawingPoints.value, clickedPoint];
+    console.log('Current points:', drawingPoints.value);
+
+    if (drawingPoints.value.length === 3) {
+      console.log('Drawing box with points:', drawingPoints.value);
+      const [stern, bow, side] = drawingPoints.value;
+      const boxPoints = calculateOBB(stern, bow, side);
+      drawnBoxes.value = [...drawnBoxes.value, boxPoints];
+      console.log('Box drawn:', boxPoints);
+
+      // Only reset points, keep drawing mode active
+      drawingPoints.value = [];
+    }
+    return;
+  }
+
+  if (isDrawingConfuser.value) {
+    const clickedPoint = [e.latlng.lat, e.latlng.lng];
+    console.log('Adding confuser point:', clickedPoint);
+
+    // If we have at least 3 points and clicked near the first point, complete the polygon
+    if (confuserPoints.value.length >= 3 && isNearFirstPoint(clickedPoint, confuserPoints.value[0], currentZoom.value)) {
+      console.log('Completing confuser polygon');
+      // Close the polygon by adding the first point again
+      const closedPolygon = [...confuserPoints.value, confuserPoints.value[0]];
+      drawnConfusers.value = [...drawnConfusers.value, closedPolygon];
+      console.log('Confuser polygon completed:', closedPolygon);
+
+      // Only reset points, keep drawing mode active
+      confuserPoints.value = [];
+    } else {
+      // Add the point to the polyline
+      confuserPoints.value = [...confuserPoints.value, clickedPoint];
+      console.log('Current confuser points:', confuserPoints.value);
+    }
+  }
+};
+
+// Function to check if a point is near another point
+const isNearFirstPoint = (point1, point2, zoom) => {
+  if (!point1 || !point2) return false;
+  console.log(`Checking if point is near first point: ${point1}, ${point2}, zoom: ${zoom}`);
+
+  // TODO: this depends on the zoom level, we need to get the current zoom level
+  const threshold = 0.001 * zoom / 16; // Great for zoom 16
+  const dx = point1[0] - point2[0];
+  const dy = point1[1] - point2[1];
+  console.log(`Distance: ${Math.sqrt(dx * dx + dy * dy)}, threshold: ${threshold}`);
+  return Math.sqrt(dx * dx + dy * dy) < threshold;
+};
+
+// Function to toggle drawing mode
+const toggleDrawingMode = () => {
+  // If already in drawing mode, just turn it off
+  if (isDrawingMode.value) {
+    isDrawingMode.value = false;
+    drawingPoints.value = [];
+  } else {
+    // Turn off other modes first
+    isDrawingConfuser.value = false;
+    isSelectionMode.value = false;
+    confuserPoints.value = [];
+    clearSelection();
+    // Then enable drawing mode
+    isDrawingMode.value = true;
+  }
+
+  // Update cursor
+  const mapElement = document.querySelector('.leaflet-container');
+  if (mapElement) {
+    mapElement.style.cursor = isDrawingMode.value ? 'crosshair' : '';
+  }
+};
+
+// Function to toggle confuser mode
+const toggleConfuserMode = () => {
+  // If already in confuser mode, just turn it off
+  if (isDrawingConfuser.value) {
+    isDrawingConfuser.value = false;
+    confuserPoints.value = [];
+  } else {
+    // Turn off other modes first
+    isDrawingMode.value = false;
+    isSelectionMode.value = false;
+    drawingPoints.value = [];
+    clearSelection();
+    // Then enable confuser mode
+    isDrawingConfuser.value = true;
+  }
+
+  // Update cursor
+  const mapElement = document.querySelector('.leaflet-container');
+  if (mapElement) {
+    mapElement.style.cursor = isDrawingConfuser.value ? 'crosshair' : '';
+  }
+};
+
+// Function to toggle selection mode
+const toggleSelectionMode = () => {
+  // If already in selection mode, just turn it off
+  if (isSelectionMode.value) {
+    isSelectionMode.value = false;
+    clearSelection();
+  } else {
+    // Turn off other modes first
+    isDrawingMode.value = false;
+    isDrawingConfuser.value = false;
+    drawingPoints.value = [];
+    confuserPoints.value = [];
+    // Then enable selection mode
+    isSelectionMode.value = true;
+  }
+
+  // Update cursor
+  const mapElement = document.querySelector('.leaflet-container');
+  if (mapElement) {
+    mapElement.style.cursor = isSelectionMode.value ? 'pointer' : '';
+  }
+};
+
+// Function to clear all boxes
+const clearAll = () => {
+  drawnBoxes.value = [];
+  drawingPoints.value = [];
+  isDrawingMode.value = false;
+  isDrawingConfuser.value = false;
+  confuserPoints.value = [];
+  isSelectionMode.value = false;
+  clearSelection();
+};
+
+// Update onMapReady to include mouse move handler
+const onMapReady = (e) => {
+  console.log('Map ready event:', e);
+  mapRef.value = e.target;
+
+  // Add mouse move handler to the map instance
+  e.target.on('mousemove', (moveEvent) => {
+    if (isDrawingConfuser.value) {
+      lastMousePosition.value = [moveEvent.latlng.lat, moveEvent.latlng.lng];
+      console.log('Mouse position updated:', lastMousePosition.value);
+    }
+  });
+
   if (initialBounds.value[0][0] !== -60) {
-    console.log('Fitting to existing bounds');
-    map.value.fitBounds(initialBounds.value, {
+    e.target.fitBounds(initialBounds.value, {
       padding: [50, 50],
       maxZoom: 14
     });
   }
 };
+
+// Update drawing status message
+const drawingStatus = computed(() => {
+  if (isDrawingConfuser.value) {
+    if (confuserPoints.value.length === 0) {
+      return 'Click to start drawing a confuser polygon';
+    } else {
+      return 'Click to add points, click near the first point to complete';
+    }
+  }
+
+  if (!isDrawingMode.value) return '';
+  switch (drawingPoints.value.length) {
+    case 0:
+      return 'Click on the stern (back) of the ship';
+    case 1:
+      return 'Click on the bow (front) of the ship';
+    case 2:
+      return 'Click on one side of the ship';
+    default:
+      return '';
+  }
+});
 
 const onTileLoad = (e) => {
   console.log('Tile loaded:', e);
@@ -294,12 +675,81 @@ const retryLoading = async () => {
     error.value = 'Failed to load image. Please try again.';
   }
 };
+
+// Add new selection functions
+const selectAnnotation = (type, index, event) => {
+  console.log('Selection attempt:', { type, index });
+
+  // Only allow selection in selection mode
+  if (!isSelectionMode.value) {
+    console.log('Not in selection mode, ignoring selection');
+    return;
+  }
+
+  // Don't allow selection while drawing
+  if (isDrawingMode.value || isDrawingConfuser.value) {
+    console.log('In drawing mode, ignoring selection');
+    return;
+  }
+
+  // Prevent the click from propagating to the map
+  if (event?.originalEvent) {
+    event.originalEvent.preventDefault();
+    event.originalEvent.stopPropagation();
+  }
+
+  console.log(`Selecting ${type} at index ${index}`);
+  selectedAnnotation.value = { type, index };
+
+  // Update cursor for the selected item
+  const mapElement = document.querySelector('.leaflet-container');
+  if (mapElement) {
+    mapElement.style.cursor = 'pointer';
+  }
+};
+
+const clearSelection = () => {
+  selectedAnnotation.value = null;
+
+  // Reset cursor
+  const mapElement = document.querySelector('.leaflet-container');
+  if (mapElement) {
+    mapElement.style.cursor = '';
+  }
+};
+
+const deleteSelected = () => {
+  if (!selectedAnnotation.value) return;
+
+  const { type, index } = selectedAnnotation.value;
+
+  if (type === 'box') {
+    drawnBoxes.value = drawnBoxes.value.filter((_, i) => i !== index);
+  } else if (type === 'confuser') {
+    drawnConfusers.value = drawnConfusers.value.filter((_, i) => i !== index);
+  }
+
+  clearSelection();
+};
+
+// Add styles for selectable annotations
+const style = document.createElement('style');
+style.textContent = `
+  .selectable-annotation {
+    cursor: pointer !important;
+  }
+  .selectable-annotation:hover {
+    filter: brightness(1.2);
+  }
+`;
+document.head.appendChild(style);
 </script>
 
 <style scoped>
 .ship-detection {
   height: calc(100vh - 60px); /* Adjust for header height */
   overflow: hidden;
+  display: flex;
 }
 
 .image-panel {
@@ -307,30 +757,78 @@ const retryLoading = async () => {
   overflow: hidden;
   background: #f5f5f5;
   height: 100%;
+  flex: 1;
 }
 
 .image-container {
   position: relative;
   height: 100%;
   width: 100%;
+  z-index: 1;
+}
+
+.control-panel {
+  width: 300px;
+  height: 100%;
+  background: white;
+  border-left: 1px solid #e0e0e0;
+  overflow-y: auto;
+  padding: 20px;
+}
+
+.control-section {
+  margin-bottom: 30px;
+}
+
+.control-section h3 {
+  font-size: 16px;
+  font-weight: 600;
+  color: #333;
+  margin-bottom: 15px;
+  padding-bottom: 8px;
+  border-bottom: 2px solid #4a148c;
+}
+
+.opacity-control {
+  background: none;
+  padding: 0;
+  box-shadow: none;
+  position: static;
+}
+
+.opacity-control label {
+  display: block;
+  margin-bottom: 8px;
+  color: #666;
+  font-size: 14px;
+}
+
+.opacity-control input {
+  width: 100%;
+  margin: 0;
 }
 
 :deep(.leaflet-container) {
   height: 100%;
   width: 100%;
   background: #f5f5f5;
+  cursor: grab;
+}
+
+:deep(.leaflet-container:active) {
+  cursor: grabbing;
 }
 
 .zoom-indicator {
   position: absolute;
-  top: 80px;  /* Adjust position to be under zoom controls */
+  top: 80px;
   left: 12px;
-  background: rgba(255, 255, 255, 1.0);  /* Slightly transparent white */
-  width: 29px;  /* Fixed square size */
-  height: 29px;  /* Same as width for square shape */
+  background: rgba(255, 255, 255, 1.0);
+  width: 29px;
+  height: 29px;
   border-radius: 4px;
   box-shadow: 0 1px 5px rgba(0,0,0,0.2);
-  z-index: 400;  /* Below zoom controls (which are 1000) */
+  z-index: 400;
   font-size: 14px;
   font-weight: bold;
   color: #000000;
@@ -370,26 +868,98 @@ const retryLoading = async () => {
   background: #0056b3;
 }
 
-.opacity-control {
+.drawing-status {
   position: absolute;
-  bottom: 20px;
-  right: 20px;
-  background: white;
-  padding: 10px;
+  top: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(255, 255, 255, 0.9);
+  padding: 8px 16px;
   border-radius: 4px;
   box-shadow: 0 2px 4px rgba(0,0,0,0.1);
   z-index: 1000;
+  font-size: 14px;
+  color: #4A148C;
+  pointer-events: none;
+}
+
+.annotation-controls {
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 10px;
 }
 
-.opacity-control label {
-  font-size: 12px;
-  color: #333;
+.drawing-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
-.opacity-control input {
-  width: 100px;
+.control-button {
+  padding: 8px 16px;
+  border: none;
+  border-radius: 4px;
+  background: #4A148C;
+  color: white;
+  cursor: pointer;
+  font-size: 14px;
+  transition: all 0.2s ease;
+}
+
+.control-button:hover {
+  background: #6A1B9A;
+}
+
+.control-button:disabled {
+  background: #9E9E9E;
+  cursor: not-allowed;
+}
+
+.control-button.active {
+  background: #FF4081;
+}
+
+.control-button.active:hover {
+  background: #F50057;
+}
+
+.clear-button {
+  background: #dc3545;
+  color: white;
+  border: none;
+  padding: 8px 16px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.clear-button:hover {
+  background: #c82333;
+}
+
+.selection-tools {
+  margin-top: 10px;
+  padding: 10px;
+  background: #f8f9fa;
+  border-radius: 4px;
+  border: 1px solid #e9ecef;
+}
+
+.selection-info {
+  margin-bottom: 10px;
+  font-size: 14px;
+  color: #495057;
+}
+
+.selection-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.delete-button {
+  background: #dc3545;
+}
+
+.delete-button:hover {
+  background: #c82333;
 }
 </style>

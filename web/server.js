@@ -11,7 +11,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 const app = express();
-const PORT = process.env.PORT || 4173;
+const PORT = process.env.PORT || 8080;
 
 // Proxy middleware setup
 const createProxyWithAuth = (target, pathRewrite = { '^/proxy': '' }) => {

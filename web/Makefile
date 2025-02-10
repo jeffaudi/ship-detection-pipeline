@@ -17,11 +17,11 @@ install: ## Install dependencies
 	@echo "Installing dependencies..."
 	npm install
 
-run-dev: install use-dev ## Run development server
+run-dev: clean use-prod install ## Run development server with production configuration
 	@echo "Starting development server..."
-	npm run dev
+	npm run dev -- --mode production
 
-run-prod: install use-prod ## Run production build and preview
+run-prod: clean use-prod install ## Run production build and preview
 	@echo "Starting production server..."
 	npm run build
 	npm run preview
@@ -34,7 +34,7 @@ clean: ## Clean build artifacts
 	@echo "Cleaning build artifacts..."
 	rm -rf dist
 	rm -rf node_modules
-
+	rm .env
 
 # Environment commands
 use-dev: ## Switch to development environment (local API)

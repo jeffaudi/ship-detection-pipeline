@@ -19,11 +19,54 @@ export default defineConfig(({ command, mode }) => {
     VITE_TITILER_URL: env.VITE_TITILER_URL
   })
 
+  // Validate required environment variables
+  const apiUrl = env.VITE_API_URL?.replace(/\/api\/?$/, '');
+  const coggerUrl = env.VITE_COGGER_URL;
+  const titilerUrl = env.VITE_TITILER_URL;
+
+  if (!apiUrl || !coggerUrl || !titilerUrl) {
+    console.error('Missing required environment variables:', {
+      VITE_API_URL: apiUrl || 'missing',
+      VITE_COGGER_URL: coggerUrl || 'missing',
+      VITE_TITILER_URL: titilerUrl || 'missing'
+    });
+    throw new Error('Missing required environment variables');
+  }
+
   return {
     plugins: [vue()],
     server: {
       port: 8080,
-      host: true
+      host: true,
+      proxy: {
+        '/proxy/api': {
+          target: apiUrl,
+          changeOrigin: true,
+          rewrite: (path) => path.replace(/^\/proxy/, ''),
+          secure: true,
+          headers: {
+            'X-API-Key': process.env.API_KEY || ''
+          }
+        },
+        '/proxy/cogger': {
+          target: coggerUrl,
+          changeOrigin: true,
+          rewrite: (path) => path.replace(/^\/proxy\/cogger/, ''),
+          secure: true,
+          headers: {
+            'X-API-Key': process.env.API_KEY || ''
+          }
+        },
+        '/proxy/titiler': {
+          target: titilerUrl,
+          changeOrigin: true,
+          rewrite: (path) => path.replace(/^\/proxy\/titiler/, ''),
+          secure: true,
+          headers: {
+            'X-API-Key': process.env.API_KEY || ''
+          }
+        }
+      }
     },
     define: {
       // Expose env variables
