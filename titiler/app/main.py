@@ -60,24 +60,21 @@ app = FastAPI(
 app.add_middleware(APIKeyMiddleware)
 
 # Retrieve Google Application Credentials from Secret Manager
-#credentials_json = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON").strip()
-#logger.info(f"Credentials JSON: {credentials_json}")
-#if credentials_json:
-#    try:
-#        # Create a temporary file in /tmp (which is writable in Cloud Run)
-#        with open("/app/credentials.json", "w") as f:
-#            f.write(credentials_json)
-#        logger.info("Credentials file created at /app/credentials.json")
-#    except Exception as e:
-#        logger.error(f"Failed to create credentials file: {str(e)}")
-#        raise
+credentials_json = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON").strip()
+logger.info(f"Credentials JSON: {credentials_json}")
+if credentials_json:
+    try:
+        # Create a temporary file in /tmp (which is writable in Cloud Run)
+        with open("/app/credentials.json", "w") as f:
+            f.write(credentials_json)
+        logger.info("Credentials file created at /app/credentials.json")
+    except Exception as e:
+        logger.error(f"Failed to create credentials file: {str(e)}")
+        raise
 
 # Configure GDAL for GCS authentication
-#os.environ["CPL_GS_USE_SERVICE_ACCOUNT"] = "YES"  # Tell GDAL to use service account authentication
-#os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "/app/credentials.json"
-
-# User service account credentials
-os.environ["CPL_MACHINE_IS_GCE"] = "YES"
+os.environ["CPL_GS_USE_SERVICE_ACCOUNT"] = "YES"  # Tell GDAL to use service account authentication
+os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "/app/credentials.json"
 
 # Optional: Configure other GDAL settings for GCS
 os.environ["CPL_GS_MAX_RETRY"] = "5"  # Number of retries for failed requests
