@@ -194,7 +194,6 @@ gcloud-deploy: ## Deploy the service to Cloud Run
 		--concurrency 80 \
 		--cpu-boost \
 		--set-env-vars="GCS_BUCKET_NAME=$(GCS_BUCKET_NAME)" \
-		--set-secrets="GOOGLE_APPLICATION_CREDENTIALS_JSON=$(GOOGLE_APPLICATION_CREDENTIALS_SECRET):latest" \
 		--set-secrets="API_KEY=$(API_KEY_SECRET):latest" \
 		--set-secrets="SUPABASE_URL=$(SUPABASE_URL_SECRET):latest" \
 		--set-secrets="SUPABASE_KEY=$(SUPABASE_KEY_SECRET):latest"

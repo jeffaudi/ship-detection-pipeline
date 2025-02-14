@@ -46,7 +46,19 @@
               maxRequests: 4,
               loading: true,
               resampling_method: 'lanczos',
-              attribution: 'Sentinel-2 imagery'
+              attribution: 'Sentinel-2 imagery',
+              subdomains: ['a', 'b', 'c'],
+              detectRetina: true,
+              tileBuffer: 1,
+              bounds: initialBounds,
+              errorTileUrl: 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7',
+              unloadInvisibleTiles: true,
+              updateInterval: 200,
+              zIndex: 1,
+              className: 'cog-layer',
+              pane: 'tilePane',
+              maxZoomAuto: true,
+              noWrap: true
             }"
             :opacity="layerOpacity"
             @tileload="onTileLoad"
@@ -224,13 +236,22 @@ const route = useRoute();
 const imageUrl = ref(null);
 const cogStatus = ref('not_available');
 const statusPollInterval = ref(null);
-const currentZoom = ref(2); // Initial zoom level
+const currentZoom = ref(2);
+
+// Performance optimizations
+const tileLoadingQueue = ref(new Set());
+const maxConcurrentTileLoads = 4;
+const currentlyLoadingTiles = ref(0);
+const retryAttempts = ref(new Map());
+const maxRetries = 3;
+const retryDelay = 1000; // 1 second
 
 // Add new refs for loading, error, and opacity states
 const error = ref(null);
 const layerOpacity = ref(1.0);
 const tilesLoaded = ref(0);
 const totalTiles = ref(0);
+const isMapReady = ref(false);
 
 // Add new refs for drawing
 const isDrawingMode = ref(false);
@@ -251,6 +272,20 @@ const selectedAnnotation = ref(null);
 // Add new ref for selection mode
 const isSelectionMode = ref(false);
 
+// Optimized map options
+const mapOptions = computed(() => ({
+  preferCanvas: true,
+  renderer: L.canvas(),
+  wheelDebounceTime: 100,
+  wheelPxPerZoomLevel: 100,
+  zoomSnap: 0.5,
+  zoomDelta: 0.5,
+  updateWhenIdle: true,
+  updateWhenZooming: false,
+  center: [0, 0],
+  zoom: 2
+}));
+
 // Function to construct the titiler URL for the COG
 const constructTitilerUrl = () => {
   const { bucket, path } = route.query;
@@ -259,34 +294,29 @@ const constructTitilerUrl = () => {
     return null;
   }
 
-  // Use titiler to create a web mercator tile layer URL
+  // Use proxy URL to handle API key securely
   const url = `/proxy/titiler/cog/tiles/${bucket}/${path}/{z}/{x}/{y}`;
   console.log('Constructed titiler URL:', url);
   return url;
 };
 
-// Set initial bounds to show most of the world
+// Set initial bounds and map options
 const initialBounds = ref([[-60, -180], [60, 180]]);
-const mapOptions = {
-  preferCanvas: true,
-  maxZoom: 20,
-  minZoom: 1,
-  center: [0, 0],
-  zoom: 2
-};
 
 // Function to check COG status
 const checkCogStatus = async () => {
   try {
     const identifier = route.params.id;
     console.log('Checking COG status for:', identifier);
-    // Use proxy URL instead of direct TiTiler URL
+    
+    // Use proxy URL
     const response = await fetch(`/proxy/titiler/cog/status/${identifier}`, {
       headers: {
         'Accept': 'application/json',
         'Content-Type': 'application/json'
       }
     });
+    
     if (!response.ok) {
       throw new Error(`Failed to get COG status: ${response.statusText}`);
     }
@@ -336,17 +366,20 @@ const getImageBounds = async () => {
   error.value = null;
 
   try {
+    // Use proxy URL
     const response = await fetch(`/proxy/titiler/cog/info/${bucket}/${path}`, {
       headers: {
         'Accept': 'application/json',
         'Content-Type': 'application/json'
       }
     });
+    
     if (!response.ok) {
       throw new Error(`Failed to get image info: ${response.statusText}`);
     }
     const info = await response.json();
     console.log('Image info:', info);
+    
     if (info.geographic_bounds) {
       const bounds = [
         [info.geographic_bounds[1], info.geographic_bounds[0]],
@@ -354,9 +387,19 @@ const getImageBounds = async () => {
       ];
       console.log('Setting bounds to:', bounds);
 
+      // Update initial bounds
       initialBounds.value = bounds;
 
+      // Make sure map is initialized before fitting bounds
       if (mapRef.value?.leafletObject) {
+        // Set center and zoom first
+        const center = [
+          (bounds[0][0] + bounds[1][0]) / 2,
+          (bounds[0][1] + bounds[1][1]) / 2
+        ];
+        mapRef.value.leafletObject.setView(center, 8);
+        
+        // Then fit bounds
         console.log('Fitting map to bounds');
         mapRef.value.leafletObject.fitBounds(bounds, {
           padding: [50, 50],
@@ -564,8 +607,13 @@ const clearAll = () => {
 const onMapReady = (e) => {
   console.log('Map ready event:', e);
   mapRef.value = e.target;
+  leafletMap.value = e.target;
+  isMapReady.value = true;
 
-  // Add mouse move handler to the map instance
+  // Set initial view
+  e.target.setView([0, 0], 2);
+
+  // Add mouse move handler
   e.target.on('mousemove', (moveEvent) => {
     if (isDrawingConfuser.value) {
       lastMousePosition.value = [moveEvent.latlng.lat, moveEvent.latlng.lng];
@@ -573,8 +621,19 @@ const onMapReady = (e) => {
     }
   });
 
+  // If we have bounds, fit to them
   if (initialBounds.value[0][0] !== -60) {
-    e.target.fitBounds(initialBounds.value, {
+    const bounds = initialBounds.value;
+    const center = [
+      (bounds[0][0] + bounds[1][0]) / 2,
+      (bounds[0][1] + bounds[1][1]) / 2
+    ];
+    
+    // Set center and zoom first
+    e.target.setView(center, 8);
+    
+    // Then fit bounds
+    e.target.fitBounds(bounds, {
       padding: [50, 50],
       maxZoom: 14
     });
@@ -605,25 +664,45 @@ const drawingStatus = computed(() => {
 });
 
 const onTileLoad = (e) => {
-  console.log('Tile loaded:', e);
+  tilesLoaded.value++;
+  if (e.tile) {
+    e.tile.loading = false;
+  }
+  
+  // Update loading progress
+  const progress = Math.round((tilesLoaded.value / totalTiles.value) * 100);
+  drawingStatus.value = progress < 100 ? `Loading tiles: ${progress}%` : '';
 };
 
-const onTileError = (e) => {
-  console.error('Tile error:', e);
-  error.value = 'Failed to load image tile. Please try again.';
+const onTileError = async (e) => {
+  const tileUrl = e.tile?.src;
+  if (!tileUrl) return;
+
+  const attempts = (retryAttempts.get(tileUrl) || 0) + 1;
+  if (attempts <= maxRetries) {
+    retryAttempts.set(tileUrl, attempts);
+    setTimeout(() => {
+      if (e.tile) {
+        e.tile.src = tileUrl;
+      }
+    }, retryDelay * attempts);
+  } else {
+    console.error(`Tile loading failed after ${maxRetries} attempts:`, tileUrl);
+    error.value = 'Some tiles failed to load. Please try refreshing the page.';
+  }
 };
 
-const onTileLayerLoading = (e) => {
+const onTileLayerLoading = () => {
+  totalTiles.value++;
+};
+
+const onTileLayerLoad = () => {
+  drawingStatus.value = '';
   error.value = null;
-  console.log('Tile layer loading:', e);
 };
 
-const onTileLayerLoad = (e) => {
-  console.log('Tile layer loaded:', e);
-};
-
-const onZoomEnd = (e) => {
-  currentZoom.value = e.target.getZoom();
+const onZoomEnd = () => {
+  currentZoom.value = leafletMap.value?.getZoom() || 2;
 };
 
 // Watch for route changes to restart polling
